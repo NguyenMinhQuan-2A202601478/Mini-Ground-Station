@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
@@ -20,7 +21,7 @@ def list_alerts(
     severity: str | None = None,
     rule: str | None = None,
     open_only: bool = True,
-    limit: int = Query(default=100, le=1000),
+    limit: Annotated[int, Query(le=1000)] = 100,
 ) -> list[Alert]:
     stmt = select(Alert).order_by(Alert.detected_at.desc()).limit(limit)
     if satellite_id:

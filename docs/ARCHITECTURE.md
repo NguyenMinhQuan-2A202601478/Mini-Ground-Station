@@ -28,6 +28,9 @@ Three processes and one database. They share the schema and nothing else.
                                         │  mgs-worker       │
                                         │  rules + detector │
                                         └───────────────────┘
+
+The dashboard at `/` is served by mgs-api and reads the same query endpoints
+anyone else would: /summary, /telemetry/series, /passes, /alerts.
 ```
 
 ## Why the worker is a separate process
@@ -89,6 +92,17 @@ sequence numbers — stay one alert per frame.
 Without this, three orbits produced 1,324 alerts from 1,172 frames, which is the
 same as producing none. With it, the same data yields around 60. See
 [`decisions/0001-alerts-are-episodes.md`](decisions/0001-alerts-are-episodes.md).
+
+## The dashboard aggregates in the database
+
+`GET /api/v1/telemetry/series` buckets telemetry with `width_bucket` and returns
+one row per bucket with avg/min/max. The alternative — ship every frame and let
+the browser reduce it — makes the page slower every day the mission runs, and
+the reduction has to happen somewhere regardless.
+
+Returning avg *and* min/max per bucket is what keeps the downsampling honest: a
+one-frame voltage collapse inside a bucket still shows, as the band around the
+average, instead of being averaged out of existence.
 
 ## Detection in two tiers
 

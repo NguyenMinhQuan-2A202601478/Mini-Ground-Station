@@ -35,7 +35,8 @@ and behavior-level proof; do not create parallel control-plane state.
 mini-ground-station ingests satellite telemetry, stores it in PostgreSQL, and
 screens it for anomalies. Three processes, one database:
 
-- `src/mgs/api/` — FastAPI ingestion and query surface
+- `src/mgs/api/` — FastAPI ingestion and query surface, plus the dashboard
+  page it serves from `src/mgs/api/static/`
 - `src/mgs/worker/` — anomaly screening (threshold rules + statistical detector)
 - `src/mgs/simulator/` — the simulated spacecraft that feeds the API
 
@@ -47,7 +48,9 @@ screens it for anomalies. Three processes, one database:
 - `docs/ARCHITECTURE.md` is authoritative for process boundaries — what runs
   where, and why screening is not done inside the request path.
 - Thresholds are configuration (`Settings` in `src/mgs/config.py`), not policy.
-  Changing a default limit changes what operators are woken up for: say so.
+  Changing a default limit changes what operators are woken up for: say so. The
+  dashboard reads those limits from `/api/v1/summary` rather than hard-coding
+  them (`docs/decisions/0003`); keep it that way.
 
 ### Validation
 
@@ -69,7 +72,10 @@ Stop and ask before:
 - weakening a uniqueness constraint — `uq_telemetry_sat_seq` and
   `uq_alerts_dedupe` are what make ingestion and alerting safe to retry;
 - changing alert severity thresholds or the episode model in
-  `src/mgs/worker/screener.py` — both decide what a human gets paged for.
+  `src/mgs/worker/screener.py` — both decide what a human gets paged for;
+- putting two measures with different units on one chart. Three separate charts
+  is deliberate: a shared y-axis across volts, degrees and dBm would invent a
+  correlation the data does not contain.
 
 ### Navigation
 

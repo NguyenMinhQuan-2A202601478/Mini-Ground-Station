@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
@@ -38,7 +39,7 @@ def list_telemetry(
     satellite_id: str | None = None,
     pass_id: int | None = None,
     since: datetime | None = None,
-    limit: int = Query(default=200, le=5000),
+    limit: Annotated[int, Query(le=5000)] = 200,
 ) -> list[Telemetry]:
     stmt = select(Telemetry).order_by(Telemetry.recorded_at.desc()).limit(limit)
     if satellite_id:

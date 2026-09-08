@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Annotated
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -53,7 +55,7 @@ def get_current_pass(satellite_id: str, session: Session = Depends(get_session))
 def list_passes(
     session: Session = Depends(get_session),
     satellite_id: str | None = None,
-    limit: int = Query(default=50, le=500),
+    limit: Annotated[int, Query(le=500)] = 50,
 ) -> list[Pass]:
     stmt = select(Pass).order_by(Pass.aos_at.desc()).limit(limit)
     if satellite_id:

@@ -8,7 +8,7 @@ into PostgreSQL; a background worker screens them and raises alerts.
 simulated satellite  ──HTTP──>  FastAPI ingestion  ──>  PostgreSQL
    (orbit + health model)          (passes, telemetry)      │
                                                             ├──> anomaly worker ──> alerts
-                                                            └──> query API / dashboard
+                                                            └──> query API ──> dashboard
 ```
 
 The hardware and RF layers are simulated. Everything from the ingestion API
@@ -22,6 +22,7 @@ downwards is the real thing.
 | `src/mgs/models.py` | SQLAlchemy tables: `passes`, `telemetry`, `alerts` |
 | `src/mgs/ingest.py` | Idempotent ingestion service (shared by API and tests) |
 | `src/mgs/api/` | FastAPI app and routes |
+| `src/mgs/api/static/` | The dashboard — one HTML page, no build step |
 | `src/mgs/worker/` | Threshold rules, statistical detector, screening loop |
 | `src/mgs/simulator/` | Orbit propagation and spacecraft health model |
 | `migrations/` | Alembic migrations |
@@ -44,11 +45,14 @@ mgs-worker                       # screens telemetry, writes alerts
 mgs-sim --orbits 3               # flies 3 orbits and downlinks
 ```
 
-Watch what came out:
+Then open **<http://localhost:8000/>** — the dashboard: live battery, temperature
+and signal charts with the worker's own limits drawn on them, the passes it
+heard, and the open alerts with an acknowledge button. Or from the shell:
 
 ```bash
 curl -s localhost:8000/api/v1/passes | jq
 curl -s 'localhost:8000/api/v1/alerts?open_only=true' | jq
+curl -s 'localhost:8000/api/v1/telemetry/series?buckets=20' | jq
 ```
 
 `make demo` does all of it in one shot.
@@ -79,6 +83,23 @@ Full reasoning: [`docs/product/schema.md`](docs/product/schema.md).
 
 The threshold rules need no dependencies. The statistical layer needs the `ml`
 extra; without it the worker degrades to z-score rather than failing.
+
+## The dashboard
+
+One page at `/`, served by the same FastAPI app, no build step and no
+dependencies to install. Three separate charts rather than one with three
+y-axes: volts, degrees and dBm share no scale, and overlaying them would invent
+a correlation that is not in the data.
+
+- Threshold lines come from `GET /api/v1/summary`, which reports the worker's
+  live limits — a line on a chart can never disagree with the rule that pages
+  someone.
+- Shaded bands mark the passes, so you can see the signal strength rise as the
+  satellite climbs above the horizon.
+- Charts are drawn from `GET /api/v1/telemetry/series`, which buckets and
+  aggregates **in PostgreSQL**. A 900-pixel chart has no use for 50,000 rows.
+- Every chart has a table view (the "Table view" button), a crosshair tooltip,
+  and keyboard navigation with the arrow keys.
 
 ## Tests
 

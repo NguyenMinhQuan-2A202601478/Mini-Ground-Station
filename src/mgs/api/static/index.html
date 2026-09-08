@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mini-ground-station</title>
+<style>
+/* Tokens. Light is the base; dark is a selected set of steps for the dark
+   surface, declared under both the OS setting and the explicit toggle. */
+:root {
+  color-scheme: light;
+  --plane:        #f9f9f7;
+  --surface:      #fcfcfb;
+  --ink:          #0b0b0b;
+  --ink-2:        #52514e;
+  --muted:        #898781;
+  --grid:         #e1e0d9;
+  --axis:         #c3c2b7;
+  --border:       rgba(11, 11, 11, 0.10);
+  --series:       #2a78d6;
+  --series-wash:  rgba(42, 120, 214, 0.10);
+  --pass-band:    rgba(42, 120, 214, 0.07);
+  --good:         #0ca30c;
+  --warning:      #fab219;
+  --serious:      #ec835a;
+  --critical:     #d03b3b;
+  --hover:        rgba(11, 11, 11, 0.04);
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --plane:       #0d0d0d;
+    --surface:     #1a1a19;
+    --ink:         #ffffff;
+    --ink-2:       #c3c2b7;
+    --muted:       #898781;
+    --grid:        #2c2c2a;
+    --axis:        #383835;
+    --border:      rgba(255, 255, 255, 0.10);
+    --series:      #3987e5;
+    --series-wash: rgba(57, 135, 229, 0.14);
+    --pass-band:   rgba(57, 135, 229, 0.10);
+    --hover:       rgba(255, 255, 255, 0.06);
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --plane:       #0d0d0d;
+  --surface:     #1a1a19;
+  --ink:         #ffffff;
+  --ink-2:       #c3c2b7;
+  --muted:       #898781;
+  --grid:        #2c2c2a;
+  --axis:        #383835;
+  --border:      rgba(255, 255, 255, 0.10);
+  --series:      #3987e5;
+  --series-wash: rgba(57, 135, 229, 0.14);
+  --pass-band:   rgba(57, 135, 229, 0.10);
+  --hover:       rgba(255, 255, 255, 0.06);
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--plane);
+  color: var(--ink);
+  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  padding: 24px;
+}
+.wrap { max-width: 1240px; margin: 0 auto; }
+
+/* --- header ----------------------------------------------------------- */
+header { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; margin-bottom: 4px; }
+h1 { font-size: 19px; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
+.sub { color: var(--muted); font-size: 13px; }
+header .spacer { flex: 1; }
+.pill {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 500;
+  border: 1px solid var(--border); color: var(--ink-2); background: var(--surface);
+}
+.pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.pill.live .dot { background: var(--good); }
+
+/* --- filter row: one row, above everything it scopes ------------------ */
+.filters {
+  display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+  margin: 16px 0 18px;
+}
+label.field { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-2); font-size: 13px; }
+select, button {
+  font: inherit; font-size: 13px; color: var(--ink);
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 7px; padding: 5px 9px;
+}
+button { cursor: pointer; }
+button:hover { background: var(--hover); }
+button[aria-pressed="true"] { border-color: var(--series); color: var(--series); }
+
+/* --- tiles ------------------------------------------------------------ */
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+.tile {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 10px; padding: 14px 16px;
+}
+.tile .label { color: var(--muted); font-size: 12px; }
+.tile .value { font-size: 24px; font-weight: 600; margin-top: 2px; }
+.tile .unit { font-size: 14px; font-weight: 500; color: var(--ink-2); margin-left: 2px; }
+.tile .note { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.tile.hero { grid-column: span 2; }
+.tile.hero .value { font-size: 48px; line-height: 1.05; letter-spacing: -0.02em; }
+
+/* --- cards & charts --------------------------------------------------- */
+.card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 10px; padding: 16px; margin-top: 12px;
+}
+.card h2 { font-size: 14px; font-weight: 600; margin: 0; }
+.card .cap { display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; }
+.card .cap .spacer { flex: 1; }
+.card .hint { color: var(--muted); font-size: 12px; }
+.charts { display: grid; grid-template-columns: 1fr; }
+.plot { position: relative; }
+.plot svg { display: block; width: 100%; }
+.plot svg:focus-visible { outline: 2px solid var(--series); outline-offset: 2px; border-radius: 6px; }
+.tip {
+  position: absolute; pointer-events: none; opacity: 0;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 8px; padding: 8px 10px; font-size: 12px;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.10); min-width: 130px; z-index: 3;
+}
+.tip .when { color: var(--muted); margin-bottom: 4px; }
+.tip .row { display: flex; align-items: center; gap: 7px; justify-content: space-between; }
+.tip .key { display: inline-block; width: 12px; height: 2px; border-radius: 1px; background: var(--series); }
+.tip .name { color: var(--ink-2); }
+.tip .num { font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* --- tables ----------------------------------------------------------- */
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { text-align: left; font-weight: 500; color: var(--muted); font-size: 12px; padding: 6px 8px; }
+td { padding: 6px 8px; border-top: 1px solid var(--grid); font-variant-numeric: tabular-nums; }
+td.text { font-variant-numeric: normal; }
+.scroll { overflow-x: auto; }
+.tableview { margin-top: 10px; max-height: 260px; overflow-y: auto; }
+.cols { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: start; }
+@media (max-width: 900px) { .cols { grid-template-columns: 1fr; } .tile.hero { grid-column: span 2; } }
+
+/* --- alerts ----------------------------------------------------------- */
+.alert { display: flex; gap: 10px; padding: 10px 8px; border-top: 1px solid var(--grid); align-items: flex-start; }
+.alert:first-child { border-top: 0; }
+.alert .icon { font-size: 13px; line-height: 1.4; }
+.alert .body { flex: 1; min-width: 0; }
+.alert .head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.alert .rule { font-weight: 600; font-size: 13px; }
+.alert .sev { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; font-weight: 600; }
+.alert .msg { color: var(--ink-2); font-size: 13px; margin-top: 2px; }
+.alert .when { color: var(--muted); font-size: 12px; margin-top: 2px; font-variant-numeric: tabular-nums; }
+.sev-critical { color: var(--critical); }
+.sev-warning  { color: var(--warning); }
+.sev-info     { color: var(--good); }
+.empty { color: var(--muted); font-size: 13px; padding: 14px 8px; }
+.stale { opacity: 0.55; transition: opacity 120ms; }
+footer { color: var(--muted); font-size: 12px; margin: 22px 0 8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>mini-ground-station</h1>
+  <span class="sub" id="station-note">telemetry, passes, and alerts</span>
+  <span class="spacer"></span>
+  <span class="pill" id="link-pill"><span class="dot"></span><span id="link-text">no contact</span></span>
+</header>
+
+<div class="filters">
+  <label class="field">Satellite
+    <select id="satellite"></select>
+  </label>
+  <label class="field">Range
+    <select id="range">
+      <option value="pass">Last pass</option>
+      <option value="pass3" selected>Last 3 passes</option>
+      <option value="1h">Last hour</option>
+      <option value="24h">Last 24 hours</option>
+      <option value="all">All data</option>
+    </select>
+  </label>
+  <button id="refresh">Refresh</button>
+  <button id="auto" aria-pressed="true">Auto every 5s</button>
+  <button id="tables" aria-pressed="false">Table view</button>
+  <span class="spacer"></span>
+  <button id="theme" title="Switch light/dark">Theme</button>
+</div>
+
+<div class="tiles" id="tiles"></div>
+
+<div class="charts" id="charts"></div>
+
+<div class="cols" style="margin-top:12px">
+  <div class="card">
+    <div class="cap"><h2>Open alerts</h2><span class="spacer"></span><span class="hint" id="alert-hint"></span></div>
+    <div id="alerts"></div>
+  </div>
+  <div class="card">
+    <div class="cap"><h2>Recent passes</h2><span class="spacer"></span><span class="hint" id="pass-hint"></span></div>
+    <div class="scroll"><table id="passes"></table></div>
+  </div>
+</div>
+
+<footer id="foot">—</footer>
+</div>
+<script src="/static/dashboard.js"></script>
+</body>
+</html>

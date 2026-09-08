@@ -6,9 +6,10 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 
 from mgs import __version__
-from mgs.api.routes import alerts, health, passes, telemetry
+from mgs.api.routes import alerts, dashboard, health, passes, telemetry
 from mgs.config import get_settings
 
 
@@ -36,10 +37,14 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+app.mount("/static", StaticFiles(directory=dashboard.STATIC), name="static")
+
 app.include_router(health.router)
+app.include_router(dashboard.page)
 app.include_router(telemetry.router, prefix="/api/v1")
 app.include_router(passes.router, prefix="/api/v1")
 app.include_router(alerts.router, prefix="/api/v1")
+app.include_router(dashboard.router, prefix="/api/v1")
 
 
 def run() -> None:

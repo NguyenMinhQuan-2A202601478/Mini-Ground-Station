@@ -126,3 +126,73 @@ class Health(BaseModel):
     status: Literal["ok", "degraded"]
     database: bool
     version: str
+
+
+# --- Dashboard ------------------------------------------------------------
+
+
+class SeriesPoint(BaseModel):
+    """One time bucket of telemetry, aggregated in the database."""
+
+    t: datetime
+    n: int
+    battery_avg: float | None = None
+    battery_min: float | None = None
+    battery_max: float | None = None
+    temperature_avg: float | None = None
+    temperature_min: float | None = None
+    temperature_max: float | None = None
+    signal_avg: float | None = None
+
+
+class TelemetrySeries(BaseModel):
+    satellite_id: str | None
+    start: datetime | None
+    end: datetime | None
+    bucket_seconds: float
+    frame_count: int
+    points: list[SeriesPoint]
+
+
+class AlertCounts(BaseModel):
+    critical: int = 0
+    warning: int = 0
+    info: int = 0
+
+    @property
+    def total(self) -> int:
+        return self.critical + self.warning + self.info
+
+
+class Satellite(BaseModel):
+    satellite_id: str
+    frame_count: int
+    last_contact_at: datetime | None
+
+
+class Limits(BaseModel):
+    """The operating limits the worker actually screens against.
+
+    The dashboard draws its threshold lines from these rather than hard-coding
+    them, so a line on a chart can never disagree with the rule that pages
+    someone.
+    """
+
+    battery_min_v: float
+    battery_critical_v: float
+    temp_max_c: float
+    temp_min_c: float
+
+
+class Summary(BaseModel):
+    """Everything the dashboard header needs, in one round trip."""
+
+    satellite_id: str | None
+    latest: TelemetryOut | None
+    frame_count: int
+    pass_count: int
+    unscreened: int
+    current_pass: PassOut | None
+    last_pass: PassOut | None
+    open_alerts: AlertCounts
+    limits: Limits
