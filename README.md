@@ -1,5 +1,38 @@
 # mini-ground-station
 
+[![CI](https://github.com/NguyenMinhQuan-2A202601478/Mini-Ground-Station/actions/workflows/ci.yml/badge.svg)](https://github.com/NguyenMinhQuan-2A202601478/Mini-Ground-Station/actions/workflows/ci.yml)
+
+Trạm mặt đất cho vệ tinh LEO. Vệ tinh mô phỏng bay quỹ đạo thật tính bằng SGP4
+từ TLE, ghi telemetry suốt vòng quỹ đạo rồi dồn xuống trong những phút hiếm hoi
+bay qua trạm. FastAPI nhận và lưu vào PostgreSQL, một worker riêng dò bất
+thường và sinh cảnh báo, dashboard vẽ biểu đồ.
+
+Phần cứng và RF là mô phỏng. Cơ học quỹ đạo thì không, và mọi thứ từ API nhận
+dữ liệu trở xuống đều chạy thật.
+
+### Đọc gì trong 5 phút đầu
+
+Nếu bạn chỉ có vài phút, bốn file này nói được nhiều nhất về cách dự án được
+nghĩ ra, chứ không chỉ nó làm gì:
+
+| File | Vì sao đáng đọc |
+|---|---|
+| [`docs/product/schema.md`](docs/product/schema.md) | Schema được thiết kế trước khi viết dòng code nào. Giải thích vì sao chỉ có ba bảng: con trỏ của worker nằm ngay trên cột `telemetry.screened_at`, nên không cần bảng thứ tư để lưu trạng thái. |
+| [`docs/decisions/0004`](docs/decisions/0004-real-orbit-propagation.md) | Mô hình quỹ đạo đầu tiên phải *gian lận* — dịch ground track lên trên trạm để vòng nào cũng có pass. Cú gian lận đó xoá mất chính bài toán: một trạm chỉ thấy vệ tinh khoảng 1% thời gian trong ngày. |
+| [`docs/decisions/0006`](docs/decisions/0006-retention-not-partitioning.md) | Tại sao **không** partition bảng telemetry. Không phải ý kiến cá nhân — PostgreSQL từ chối, và thông báo lỗi của nó được trích nguyên văn. Partition sẽ đổi được xoá rẻ hơn bằng cách vứt đi tính nạp-đúng-một-lần. |
+| [`docs/decisions/0001`](docs/decisions/0001-alerts-are-episodes.md) | 1.172 frame sinh ra **1.324 cảnh báo**, tức là vô dụng. Sửa thành cảnh báo theo đợt còn 60. Có số đo trước và sau. |
+
+Job `Container stack` trong CI dựng nguyên hệ trong container, bay một ngày quỹ
+đạo thật rồi kiểm tra kết quả. Chính những phép kiểm tra này đã phát hiện năm
+lỗi mà unit test bỏ sót: crash khi screen lại, cảnh báo trùng ở ranh giới
+batch, hai worker cùng cắt một luồng dữ liệu, `--once` bỏ sót 1.613 frame, và
+cửa sổ huấn luyện neo nhầm vào đồng hồ hệ thống khiến việc replay dữ liệu cũ
+im lặng không chấm gì cả. Chi tiết nằm trong lịch sử commit.
+
+*Phần còn lại của README bằng tiếng Anh.*
+
+---
+
 A miniature satellite ground station. A simulated spacecraft flies a **real
 orbit** — SGP4 against a published TLE — and downlinks telemetry during the
 contact windows that geometry actually gives it; a FastAPI service ingests
