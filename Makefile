@@ -1,4 +1,5 @@
-.PHONY: help setup db-up db-down migrate api worker sim demo test lint fmt clean
+.PHONY: help setup db-up db-down migrate api worker sim demo test lint fmt clean \
+	image up down restart logs ps stack-demo
 
 VENV := .venv/bin
 
@@ -52,6 +53,38 @@ lint: ## ruff check
 fmt: ## ruff format
 	$(VENV)/ruff format src tests
 	$(VENV)/ruff check --fix src tests
+
+# --- containers ----------------------------------------------------------
+# The same three processes, packaged. `make up` needs nothing installed
+# locally except Docker.
+
+image: ## build the container image
+	docker compose build
+
+up: ## run the whole stack (db + migrations + api + worker)
+	docker compose up -d
+	@until [ "$$(docker inspect -f '{{.State.Health.Status}}' mgs-api 2>/dev/null)" = healthy ]; do sleep 1; done
+	@echo "dashboard: http://localhost:$${MGS_API_PORT:-8000}/"
+
+down: ## stop the stack (keeps the data volume; add -v yourself to wipe it)
+	docker compose --profile demo down
+
+restart: image up ## rebuild and restart
+
+logs: ## follow the logs
+	docker compose logs -f --tail 100
+
+ps: ## what is running
+	docker compose ps
+
+stack-demo: up ## containers only: fly two orbits, screen them, summarise
+	docker compose --profile demo run --rm \
+		-e MGS_SIM_ORBIT_SECONDS=24 -e MGS_SIM_FRAME_INTERVAL_SECONDS=0.05 \
+		sim mgs-sim --orbits 2 --seed 7
+	docker compose run --rm worker mgs-worker --once
+	@docker compose exec -T db psql -U mgs -d mgs \
+		-c "SELECT count(*) AS frames FROM telemetry" \
+		-c "SELECT rule, severity, count(*) FROM alerts GROUP BY 1,2 ORDER BY 3 DESC"
 
 clean:
 	rm -rf .pytest_cache .ruff_cache **/__pycache__

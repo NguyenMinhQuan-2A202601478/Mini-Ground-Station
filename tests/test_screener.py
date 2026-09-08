@@ -143,3 +143,100 @@ def test_frames_are_marked_screened(session, settings):
     screen_once(session, settings)
 
     assert screen_once(session, settings) == (0, 0)
+
+
+def test_re_screening_a_closed_episode_does_not_duplicate_or_crash(session, settings):
+    """The case a re-run actually hits.
+
+    An episode that is still open is found by `open_episodes` and skipped. An
+    episode that has *closed* is not — and a plain insert then collides with
+    `uq_alerts_dedupe`, which is what re-screening real data does.
+    """
+    for seq in range(1, 6):
+        send(session, seq, battery_voltage_v=6.5)
+    for seq in range(6, 11):
+        send(session, seq, battery_voltage_v=7.9)  # the condition clears
+    session.commit()
+
+    screen_once(session, settings)
+    first = [(a.id, a.rule, a.resolved_at) for a in alerts(session)]
+    assert len(first) == 1 and first[0][2] is not None
+
+    from mgs.models import Telemetry
+
+    session.query(Telemetry).update({"screened_at": None})
+    session.commit()
+    screen_once(session, settings)
+
+    assert [(a.id, a.rule, a.resolved_at) for a in alerts(session)] == first
+
+
+def test_only_one_worker_screens_at_a_time(session, settings, engine):
+    """Two workers must not split one satellite's stream between them.
+
+    Screening decides whether this frame continues the episode the last one
+    opened; a worker that sees only half the frames opens episodes for the
+    fragments it does see.
+    """
+    from sqlalchemy.orm import sessionmaker
+
+    for seq in range(1, 21):
+        send(session, seq, battery_voltage_v=6.5)
+    session.commit()
+
+    other = sessionmaker(bind=engine)()
+    try:
+        from mgs.worker.screener import claim_screening_lock
+
+        assert claim_screening_lock(other) is True  # held, transaction still open
+        assert screen_once(session, settings) == (0, 0)
+    finally:
+        other.rollback()
+        other.close()
+
+    # Once the holder lets go, screening proceeds normally.
+    screened, _ = screen_once(session, settings)
+    assert screened == 20
+
+
+def _drain(session, settings) -> None:
+    while screen_once(session, settings)[0]:
+        pass
+
+
+def test_an_episode_spanning_batch_boundaries_is_still_one_alert(session, settings):
+    """A condition longer than one batch must not re-open on every batch."""
+    small = settings.model_copy(update={"worker_batch_size": 10})
+    for seq in range(1, 31):
+        send(session, seq, battery_voltage_v=6.5)
+    session.commit()
+
+    _drain(session, small)
+    assert len(alerts(session, "BATTERY_LOW")) == 1
+
+
+def test_re_screening_across_batch_boundaries_adds_nothing(session, settings):
+    """The failure the container run caught.
+
+    The first screening left an episode open across a batch boundary. On the
+    re-run its alert row was adopted but still marked resolved, so the next
+    batch could not see it and opened a second alert anchored to the first
+    frame of that batch.
+    """
+    small = settings.model_copy(update={"worker_batch_size": 10})
+    for seq in range(1, 26):
+        send(session, seq, battery_voltage_v=6.5)
+    for seq in range(26, 31):
+        send(session, seq, battery_voltage_v=7.9)
+    session.commit()
+
+    _drain(session, small)
+    first = [(a.id, a.dedupe_key, a.resolved_at) for a in alerts(session)]
+
+    from mgs.models import Telemetry
+
+    session.query(Telemetry).update({"screened_at": None})
+    session.commit()
+    _drain(session, small)
+
+    assert [(a.id, a.dedupe_key, a.resolved_at) for a in alerts(session)] == first

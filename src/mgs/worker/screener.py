@@ -40,11 +40,29 @@ EPISODIC_RULES = frozenset({"BATTERY_LOW", "TEMP_HIGH", "TEMP_LOW", "SAFE_MODE",
 SEVERITY_ORDER = {"info": 0, "warning": 1, "critical": 2}
 
 
+# One arbitrary, stable key. Screening is a sequential fold over a satellite's
+# frames — deciding whether *this* frame continues the episode the last one
+# opened — so two workers splitting one stream between them would each see a
+# fragment and open an episode for it. Ingestion stays fully parallel; only
+# screening is single-flight.
+SCREENING_LOCK_KEY = 0x6D67_7301
+
+
+def claim_screening_lock(session: Session) -> bool:
+    """Take the advisory lock for this batch, or report that someone else has it.
+
+    The lock is held for the transaction, so a worker that crashes mid-batch
+    releases it when its connection dies — there is nothing to clean up.
+    """
+    return bool(session.scalar(select(func.pg_try_advisory_xact_lock(SCREENING_LOCK_KEY))))
+
+
 def fetch_unscreened(session: Session, limit: int) -> list[Telemetry]:
     """Claim the oldest unscreened frames.
 
-    `FOR UPDATE SKIP LOCKED` means a second worker process can be started
-    without the two of them fighting over the same rows.
+    `FOR UPDATE SKIP LOCKED` keeps a second process from processing a row this
+    one already holds, which matters if the advisory lock above is ever
+    relaxed to per-satellite.
     """
     stmt = (
         select(Telemetry)
@@ -120,8 +138,13 @@ def _insert_point_alerts(session: Session, findings: list[Finding]) -> int:
 
 def screen_once(session: Session, settings: Settings) -> tuple[int, int]:
     """Screen one batch. Returns (frames screened, alerts opened)."""
+    if not claim_screening_lock(session):
+        log.debug("another worker is screening; standing by")
+        return 0, 0
+
     frames = fetch_unscreened(session, settings.worker_batch_size)
     if not frames:
+        session.rollback()  # release the lock rather than idle inside a transaction
         return 0, 0
 
     by_satellite: dict[str, list[Telemetry]] = defaultdict(list)
@@ -171,6 +194,51 @@ def screen_once(session: Session, settings: Settings) -> tuple[int, int]:
     return len(frames), created
 
 
+def _open_episode(session: Session, finding: Finding, rule: str) -> tuple[Alert, bool]:
+    """Open an episode, or adopt the one this frame already opened before.
+
+    Re-screening replays frames that have been screened once already. The
+    episode they opened is closed by then, so `open_episodes` does not find it
+    and a plain insert collides with `uq_alerts_dedupe`. Let the database
+    decide, and take back whichever row won.
+
+    An adopted row is re-opened. It has to be: the next batch looks for open
+    episodes in the database, and an adopted-but-still-resolved row is invisible
+    there, so a condition spanning a batch boundary would open a second alert on
+    the first frame of the next batch. Re-screening recomputes alerts from
+    telemetry, so the recomputed state wins over an earlier resolution — the
+    frame that clears the condition sets `resolved_at` again on the way through.
+    """
+    key = f"{finding.satellite_id}:{rule}:episode:{finding.telemetry_id}"
+    stmt = (
+        insert(Alert)
+        .values(
+            telemetry_id=finding.telemetry_id,
+            pass_id=finding.pass_id,
+            satellite_id=finding.satellite_id,
+            rule=finding.rule,
+            severity=finding.severity,
+            metric=finding.metric,
+            value=finding.value,
+            threshold=finding.threshold,
+            score=finding.score,
+            message=finding.message,
+            detected_at=finding.observed_at,
+            dedupe_key=key,
+        )
+        .on_conflict_do_nothing(constraint="uq_alerts_dedupe")
+        .returning(Alert.id)
+    )
+    new_id = session.execute(stmt).scalar_one_or_none()
+    if new_id is not None:
+        return session.get(Alert, new_id), True
+
+    existing = session.scalars(select(Alert).where(Alert.dedupe_key == key)).one()
+    existing.resolved_at = None
+    session.flush()
+    return existing, False
+
+
 def _reconcile_episodes(
     session: Session,
     frame: Telemetry,
@@ -184,26 +252,13 @@ def _reconcile_episodes(
         key = (frame.satellite_id, rule)
         existing = episodes.get(key)
         if existing is None:
-            alert = Alert(
-                telemetry_id=finding.telemetry_id,
-                pass_id=finding.pass_id,
-                satellite_id=finding.satellite_id,
-                rule=finding.rule,
-                severity=finding.severity,
-                metric=finding.metric,
-                value=finding.value,
-                threshold=finding.threshold,
-                score=finding.score,
-                message=finding.message,
-                detected_at=finding.observed_at,
-                dedupe_key=f"{finding.satellite_id}:{rule}:episode:{finding.telemetry_id}",
-            )
-            session.add(alert)
-            session.flush()
+            alert, created = _open_episode(session, finding, rule)
             episodes[key] = alert
-            opened += 1
-            log.warning("[%s] %s opened — %s", frame.satellite_id, rule, finding.message)
-        elif SEVERITY_ORDER[finding.severity] > SEVERITY_ORDER[existing.severity]:
+            if created:
+                opened += 1
+                log.warning("[%s] %s opened — %s", frame.satellite_id, rule, finding.message)
+            continue
+        if SEVERITY_ORDER[finding.severity] > SEVERITY_ORDER[existing.severity]:
             # The same episode got worse: escalate in place rather than
             # opening a second alert for one continuing condition.
             existing.severity = finding.severity

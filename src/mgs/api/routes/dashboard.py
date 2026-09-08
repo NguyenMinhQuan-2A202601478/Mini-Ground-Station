@@ -65,6 +65,7 @@ def summary(
     frame_count = session.scalar(
         scoped(select(func.count()).select_from(Telemetry), Telemetry.satellite_id)
     )
+    max_seq = session.scalar(scoped(select(func.max(Telemetry.seq)), Telemetry.satellite_id))
     unscreened = session.scalar(
         scoped(select(func.count()).select_from(Telemetry), Telemetry.satellite_id).where(
             Telemetry.screened_at.is_(None)
@@ -92,6 +93,7 @@ def summary(
     return Summary(
         satellite_id=satellite_id,
         latest=latest,
+        max_seq=max_seq,
         frame_count=frame_count or 0,
         pass_count=pass_count or 0,
         unscreened=unscreened or 0,

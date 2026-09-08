@@ -49,9 +49,17 @@ data itself is already an orbit old, that latency is free.
 
 The queue is a partial index on a column. `fetch_unscreened` selects
 `WHERE screened_at IS NULL ... FOR UPDATE SKIP LOCKED`, which gives at-least-once
-delivery, parallel workers, and crash recovery without a second piece of
-infrastructure to run and reason about. Adding Kafka or Celery here would add
-operational surface without changing a single guarantee.
+delivery and crash recovery without a second piece of infrastructure to run and
+reason about. Adding Kafka or Celery here would add operational surface without
+changing a single guarantee.
+
+Screening itself is **single-flight**, guarded by a PostgreSQL advisory lock
+held for the batch's transaction. It has to be: deciding whether this frame
+continues the episode the last one opened is a sequential fold over the stream,
+so two workers splitting the frames between them would each see a fragment and
+open an episode for it. Ingestion stays fully parallel; a worker that dies
+mid-batch drops its connection, and the lock with it. Running a second worker
+therefore buys redundancy, not throughput.
 
 The limit of this choice: it is bounded by what one PostgreSQL can index. At a
 few hundred frames per pass, it is not close.

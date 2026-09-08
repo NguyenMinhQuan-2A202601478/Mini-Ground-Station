@@ -173,3 +173,20 @@ def test_a_single_frame_yields_one_bucket(session):
     result = telemetry_series(session, satellite_id="TEST-1", buckets=50)
     assert len(result.points) == 1
     assert result.points[0].n == 1
+
+
+def test_summary_reports_the_highest_frame_number_not_the_latest_one(session, settings):
+    """A backfilled frame arrives late carrying an old sequence number.
+
+    The simulator resumes its numbering from `max_seq`; resuming from the most
+    recent frame's `seq` would replay everything that came after it.
+    """
+    for seq in (1, 2, 3, 400):
+        send(session, seq)
+    # Late arrival of a frame recorded long before the others.
+    send(session, 7, recorded_at=BASE + timedelta(days=1))
+    session.commit()
+
+    result = summary(session, satellite_id="TEST-1", settings=settings)
+    assert result.latest.seq == 7
+    assert result.max_seq == 400

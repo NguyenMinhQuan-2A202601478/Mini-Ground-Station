@@ -189,6 +189,10 @@ class Summary(BaseModel):
 
     satellite_id: str | None
     latest: TelemetryOut | None
+    # The highest frame number received, which is not the same thing as the
+    # latest frame: a backfilled downlink lands with an old sequence number and
+    # a new arrival time.
+    max_seq: int | None
     frame_count: int
     pass_count: int
     unscreened: int

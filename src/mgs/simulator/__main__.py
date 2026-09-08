@@ -53,6 +53,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="probability of losing a frame on the downlink (creates DATA_GAP alerts)",
     )
     p.add_argument("--seed", type=int, default=None)
+    p.add_argument(
+        "--restart-seq",
+        action="store_true",
+        help="number frames from zero instead of continuing the station's stream",
+    )
     return p.parse_args(argv)
 
 
@@ -81,6 +86,23 @@ class Downlink:
         )
         r.raise_for_status()
 
+    def latest_seq(self, satellite_id: str) -> int:
+        """The highest frame number the station has already received.
+
+        Frame numbers come from the spacecraft, and `UNIQUE (satellite_id, seq)`
+        makes re-sending one a no-op — which is exactly right for a retried
+        downlink, and exactly wrong for a restarted simulator, whose whole
+        second run would be silently discarded as a replay. So pick up the
+        count where the station left off.
+
+        This asks for the highest number, not the most recent frame: a
+        backfilled downlink arrives late carrying an old sequence number, and
+        resuming from *that* would replay everything after it.
+        """
+        r = self.client.get("/api/v1/summary", params={"satellite_id": satellite_id})
+        r.raise_for_status()
+        return r.json().get("max_seq") or 0
+
     def send(self, frames: list[dict]) -> dict:
         r = self.client.post("/api/v1/telemetry/batch", json=frames)
         r.raise_for_status()
@@ -102,16 +124,17 @@ def main(argv: list[str] | None = None) -> int:
     craft = Spacecraft()
     link = Downlink(args.api_url)
 
-    seq = 0
+    seq = 0 if args.restart_seq else link.latest_seq(args.satellite_id)
     orbit = 0
     frames_per_orbit = max(1, int(args.orbit_seconds / args.frame_interval))
 
     log.info(
-        "simulator up | %s -> %s | %.0fs/orbit, %d frames/orbit | api=%s",
+        "simulator up | %s -> %s | %.0fs/orbit, %d frames/orbit | from seq %d | api=%s",
         args.satellite_id,
         args.station_id,
         args.orbit_seconds,
         frames_per_orbit,
+        seq + 1,
         args.api_url,
     )
 

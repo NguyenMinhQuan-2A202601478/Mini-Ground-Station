@@ -57,8 +57,14 @@ screens it for anomalies. Three processes, one database:
 ```bash
 make test          # unit tests; integration tests need `make db-up`
 make lint          # ruff check + format --check
-make demo          # end-to-end: simulate 3 orbits, ingest, screen, summarise
+make demo          # end-to-end from a local checkout
+make stack-demo    # the same, in containers
 ```
+
+CI (`.github/workflows/ci.yml`) runs lint, the suite against a real PostgreSQL,
+and a container stack job that flies two orbits and re-screens them. Changes to
+the worker's episode logic must keep the re-screen assertion green: screening
+the same frames twice raises no second alert.
 
 Completion means the relevant command above ran and passed. Schema changes
 additionally require `alembic upgrade head` against a live database.
@@ -75,7 +81,10 @@ Stop and ask before:
   `src/mgs/worker/screener.py` — both decide what a human gets paged for;
 - putting two measures with different units on one chart. Three separate charts
   is deliberate: a shared y-axis across volts, degrees and dBm would invent a
-  correlation the data does not contain.
+  correlation the data does not contain;
+- removing the advisory lock in `screen_once`. Screening is single-flight on
+  purpose — episode reconciliation is a sequential fold over the stream, and two
+  workers splitting it open an episode per fragment.
 
 ### Navigation
 

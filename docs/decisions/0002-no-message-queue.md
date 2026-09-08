@@ -37,13 +37,17 @@ backed by `ix_telemetry_unscreened`, a partial index on rows where
 
 Positive:
 
-- `SKIP LOCKED` gives at-least-once delivery and lets several workers run.
+- `SKIP LOCKED` gives at-least-once delivery at the row level.
 - A crash mid-batch loses nothing: unscreened rows stay unscreened.
 - Re-screening is safe because alert inserts are deduplicated by the database.
 - One backing service to operate.
 
 Tradeoffs:
 
+- Screening is single-flight: an advisory lock lets one worker screen at a
+  time, because episode reconciliation is a sequential fold over the stream
+  (see `docs/ARCHITECTURE.md`). Extra worker processes buy redundancy, not
+  throughput.
 - Throughput is bounded by what one PostgreSQL can index. At a few hundred
   frames per pass this is not close, and the decision should be revisited if a
   fleet ever pushes sustained thousands of frames per second.

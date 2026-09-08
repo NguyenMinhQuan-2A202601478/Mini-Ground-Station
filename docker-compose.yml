@@ -1,3 +1,16 @@
+# The whole ground station. `docker compose up -d` gives you a database, the
+# ingestion API with its dashboard, and the anomaly worker. Add the simulator
+# with `docker compose --profile demo up -d` when you want data flowing.
+
+x-mgs: &mgs
+  build:
+    context: .
+  image: mini-ground-station:local
+  environment: &mgs-env
+    MGS_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-mgs}:${POSTGRES_PASSWORD:-mgs}@db:5432/${POSTGRES_DB:-mgs}
+    MGS_LOG_LEVEL: ${MGS_LOG_LEVEL:-INFO}
+  restart: unless-stopped
+
 services:
   db:
     image: postgres:16-alpine
@@ -15,6 +28,55 @@ services:
       interval: 3s
       timeout: 3s
       retries: 20
+
+  # Runs to completion before anything touches the schema, so the API and the
+  # worker never race a half-applied migration.
+  migrate:
+    <<: *mgs
+    container_name: mgs-migrate
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    # The image's healthcheck probes the API's /health; nothing here serves it.
+    healthcheck:
+      disable: true
+    depends_on:
+      db:
+        condition: service_healthy
+
+  api:
+    <<: *mgs
+    container_name: mgs-api
+    command: ["mgs-api"]
+    ports:
+      - "${MGS_API_PORT:-8000}:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  worker:
+    <<: *mgs
+    container_name: mgs-worker
+    command: ["mgs-worker"]
+    healthcheck:
+      disable: true
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  # Opt-in: it writes telemetry continuously.
+  sim:
+    <<: *mgs
+    container_name: mgs-sim
+    profiles: ["demo"]
+    command: ["mgs-sim"]
+    healthcheck:
+      disable: true
+    environment:
+      <<: *mgs-env
+      MGS_SIM_API_URL: http://api:8000
+    depends_on:
+      api:
+        condition: service_healthy
 
 volumes:
   mgs-pgdata:

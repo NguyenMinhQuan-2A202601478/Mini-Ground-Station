@@ -1,0 +1,149 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_VERSION: "0.9.7"
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - name: Install
+        run: uv sync --frozen --extra ml --extra dev
+      - name: ruff check
+        run: uv run ruff check src tests
+      - name: ruff format
+        run: uv run ruff format --check src tests
+
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: mgs
+          POSTGRES_PASSWORD: mgs
+          POSTGRES_DB: mgs
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U mgs -d mgs"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      # The integration suite creates and drops its own database next to this one.
+      MGS_TEST_DATABASE_URL: postgresql+psycopg://mgs:mgs@localhost:5432/mgs_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - name: Install
+        run: uv sync --frozen --extra ml --extra dev
+      - name: pytest
+        run: uv run pytest -q
+
+  stack:
+    name: Container stack
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the image
+        run: docker compose build
+
+      - name: Start the stack
+        run: docker compose up -d
+
+      - name: Wait for the API to report healthy
+        run: |
+          for _ in $(seq 1 60); do
+            status=$(docker inspect -f '{{.State.Health.Status}}' mgs-api 2>/dev/null || echo starting)
+            [ "$status" = healthy ] && exit 0
+            sleep 2
+          done
+          echo "::error::the API never became healthy"
+          exit 1
+
+      - name: The migration actually created the schema
+        run: |
+          tables=$(docker compose exec -T db psql -U mgs -d mgs -tAc \
+            "SELECT count(*) FROM information_schema.tables
+             WHERE table_schema='public' AND table_name IN ('passes','telemetry','alerts')")
+          echo "tables: $tables"
+          [ "$tables" = "3" ]
+
+      - name: Fly two orbits
+        run: |
+          docker compose --profile demo run --rm \
+            -e MGS_SIM_ORBIT_SECONDS=24 -e MGS_SIM_FRAME_INTERVAL_SECONDS=0.05 \
+            sim mgs-sim --orbits 2 --seed 7
+
+      - name: Screen the backlog
+        run: docker compose run --rm worker mgs-worker --once
+
+      - name: Telemetry, passes, and alerts all landed
+        run: |
+          read -r frames passes alerts unscreened <<<"$(docker compose exec -T db \
+            psql -U mgs -d mgs -tAF' ' -c \
+            "SELECT (SELECT count(*) FROM telemetry),
+                    (SELECT count(*) FROM passes),
+                    (SELECT count(*) FROM alerts),
+                    (SELECT count(*) FROM telemetry WHERE screened_at IS NULL)")"
+          echo "frames=$frames passes=$passes alerts=$alerts unscreened=$unscreened"
+          [ "$frames" -gt 500 ] || { echo "::error::too few frames ingested"; exit 1; }
+          [ "$passes" -ge 2 ] || { echo "::error::the simulator never made a pass"; exit 1; }
+          [ "$alerts" -gt 0 ] || { echo "::error::the worker raised nothing at all"; exit 1; }
+          [ "$unscreened" = "0" ] || { echo "::error::the worker left frames unscreened"; exit 1; }
+
+      - name: The API and the dashboard answer
+        run: |
+          for path in / /health /api/v1/summary /api/v1/passes /api/v1/alerts \
+                      "/api/v1/telemetry/series?buckets=10" /static/dashboard.js; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:8000$path")
+            echo "$code  $path"
+            [ "$code" = "200" ] || { echo "::error::$path returned $code"; exit 1; }
+          done
+
+      - name: Re-screening the same frames raises no duplicates
+        run: |
+          # Stop the long-running worker so the one-shot below is the only one
+          # screening; otherwise the two race for the backlog and the numbers
+          # say nothing about idempotency.
+          docker compose stop worker
+          before=$(docker compose exec -T db psql -U mgs -d mgs -tAc "SELECT count(*) FROM alerts")
+          docker compose exec -T db psql -U mgs -d mgs -c "UPDATE telemetry SET screened_at = NULL" >/dev/null
+          docker compose run --rm worker mgs-worker --once >/dev/null
+          after=$(docker compose exec -T db psql -U mgs -d mgs -tAc "SELECT count(*) FROM alerts")
+          echo "alerts before=$before after=$after"
+          [ "$before" = "$after" ] || { echo "::error::re-screening duplicated alerts"; exit 1; }
+          docker compose start worker
+
+      - name: Logs
+        if: failure()
+        run: docker compose logs --no-color --tail 200
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

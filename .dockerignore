@@ -1,0 +1,17 @@
+.git
+.venv
+.pytest_cache
+.ruff_cache
+**/__pycache__
+graphify-out
+.claude
+.agents
+docs
+tests
+.env
+*.md
+!README.md
+Makefile
+docker-compose.yml
+Dockerfile
+.github

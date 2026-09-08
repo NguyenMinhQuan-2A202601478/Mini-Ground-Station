@@ -26,8 +26,32 @@ downwards is the real thing.
 | `src/mgs/worker/` | Threshold rules, statistical detector, screening loop |
 | `src/mgs/simulator/` | Orbit propagation and spacecraft health model |
 | `migrations/` | Alembic migrations |
+| `Dockerfile`, `docker-compose.yml` | One image, three processes, one command |
+| `.github/workflows/ci.yml` | Lint, tests, and a container smoke run |
 
-## Quick start
+## Quick start — containers
+
+Nothing to install but Docker:
+
+```bash
+make up          # database, migrations, API, worker
+```
+
+Then open **<http://localhost:8000/>**. Migrations run as their own container
+that must exit cleanly before the API or the worker start, so nothing ever
+races a half-applied schema.
+
+Feed it some telemetry:
+
+```bash
+make stack-demo  # two orbits, screened, with a summary of what was found
+```
+
+`docker compose --profile demo up -d sim` runs the simulator continuously
+instead. `make down` stops everything and keeps the data; `make logs` follows
+all three processes.
+
+## Quick start — local checkout
 
 ```bash
 cp .env.example .env
@@ -101,12 +125,28 @@ a correlation that is not in the data.
 - Every chart has a table view (the "Table view" button), a crosshair tooltip,
   and keyboard navigation with the arrow keys.
 
-## Tests
+## Tests and CI
 
 ```bash
-pytest                           # unit tests
-pytest -m integration            # needs the database up
+make test                        # 61 tests; the integration ones need `make db-up`
+make lint                        # ruff check + format --check
 ```
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs three jobs on every
+push and pull request:
+
+| Job | What it proves |
+|---|---|
+| **Lint** | `ruff check` and `ruff format --check` over `src` and `tests` |
+| **Tests** | the whole suite against a real PostgreSQL service |
+| **Container stack** | builds the image, brings the stack up, flies two orbits, screens them, and asserts frames, passes and alerts actually landed — then re-screens the same frames and asserts no alert was duplicated |
+
+The third job is the one that earns its keep: it caught a crash and then a
+duplicate-alert bug on re-screening that the unit tests missed, because both
+only appear once an episode has been closed and replayed.
+
+Dependencies are pinned in `uv.lock`, and both CI and the image install with
+`uv sync --frozen`, so a build resolves nothing.
 
 ## Agent tooling
 

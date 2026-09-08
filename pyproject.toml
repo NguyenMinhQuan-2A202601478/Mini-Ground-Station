@@ -58,6 +58,9 @@ extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.Body", "f
 known-first-party = ["mgs", "tests"]
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
+# "." as well as "src": the shared frame builder lives in tests/conftest.py, and
+# without the project root on the path `from tests.conftest import ...` only
+# resolves under some invocations of pytest.
+pythonpath = ["src", "."]
 testpaths = ["tests"]
 markers = ["integration: needs a live PostgreSQL"]
