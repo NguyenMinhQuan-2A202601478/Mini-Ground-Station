@@ -240,3 +240,53 @@ def test_re_screening_across_batch_boundaries_adds_nothing(session, settings):
     _drain(session, small)
 
     assert [(a.id, a.dedupe_key, a.resolved_at) for a in alerts(session)] == first
+
+
+def test_a_one_shot_run_waits_for_the_lock_instead_of_giving_up(session, settings):
+    """`--once` means "drain the backlog", so it queues rather than exits.
+
+    Treating "another worker holds the lock" as "there is nothing to screen"
+    silently left the whole backlog unscreened.
+    """
+    from mgs.worker.screener import claim_screening_lock
+
+    for seq in range(1, 11):
+        send(session, seq, battery_voltage_v=6.5)
+    session.commit()
+
+    assert claim_screening_lock(session, wait=True) is True
+    assert screen_once(session, settings, wait_for_lock=True)[0] == 10
+
+
+def test_screening_old_telemetry_still_trains_the_detector(session, settings):
+    """Replaying a historical dump must not silently score nothing.
+
+    The training window used to be anchored to `now()`, so telemetry older than
+    the window had no history to learn from — the statistical tier quietly
+    switched itself off for exactly the data you would replay it over.
+    """
+    from mgs.worker.screener import training_history
+
+    ancient = datetime(2020, 1, 1, tzinfo=UTC)
+    for seq in range(1, 21):
+        send(session, seq, recorded_at=ancient + timedelta(seconds=seq))
+    session.commit()
+    screen_once(session, settings)  # marks them screened
+
+    later = ancient + timedelta(minutes=5)
+    history = training_history(session, "TEST-1", settings, later)
+    assert len(history) == 20
+
+
+def test_the_training_window_never_includes_later_frames(session, settings):
+    """Scoring a frame against history recorded after it is time travel."""
+    from mgs.worker.screener import training_history
+
+    for seq in range(1, 21):
+        send(session, seq)
+    session.commit()
+    screen_once(session, settings)
+
+    cut = BASE + timedelta(seconds=10)
+    history = training_history(session, "TEST-1", settings, cut)
+    assert history and all(row.recorded_at < cut for row in history)

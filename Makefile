@@ -31,12 +31,12 @@ worker: ## run the anomaly worker
 sim: ## fly the simulated satellite
 	$(VENV)/mgs-sim
 
-demo: db-up migrate ## end-to-end: 3 orbits ingested, screened, and summarised
+demo: db-up migrate ## end-to-end: a day of real passes, ingested, screened, summarised
 	@set -e; \
 	$(VENV)/mgs-api >/tmp/mgs-api.log 2>&1 & api=$$!; \
 	trap "kill $$api 2>/dev/null || true" EXIT; \
 	until curl -sf localhost:8000/health >/dev/null; do sleep 1; done; \
-	$(VENV)/mgs-sim --orbits 3 --orbit-seconds 24 --frame-interval 0.05 --seed 7; \
+	$(VENV)/mgs-sim --duration 24h --time-scale 6000 --seed 7; \
 	$(VENV)/mgs-worker --once; \
 	docker compose exec -T db psql -U mgs -d mgs \
 		-c "SELECT count(*) AS passes FROM passes" \
@@ -77,10 +77,9 @@ logs: ## follow the logs
 ps: ## what is running
 	docker compose ps
 
-stack-demo: up ## containers only: fly two orbits, screen them, summarise
+stack-demo: up ## containers only: fly a day of real passes, screen, summarise
 	docker compose --profile demo run --rm \
-		-e MGS_SIM_ORBIT_SECONDS=24 -e MGS_SIM_FRAME_INTERVAL_SECONDS=0.05 \
-		sim mgs-sim --orbits 2 --seed 7
+		sim mgs-sim --duration 24h --time-scale 6000 --seed 7
 	docker compose run --rm worker mgs-worker --once
 	@docker compose exec -T db psql -U mgs -d mgs \
 		-c "SELECT count(*) AS frames FROM telemetry" \

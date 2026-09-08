@@ -112,6 +112,24 @@ Returning avg *and* min/max per bucket is what keeps the downsampling honest: a
 one-frame voltage collapse inside a bucket still shows, as the band around the
 average, instead of being averaged out of existence.
 
+## The geometry is not a model
+
+Positions come from SGP4 against a published TLE, so contact windows are the
+real ones: a few per day, minutes long, clustered, with hours of silence
+between clusters. That silence is why the spacecraft carries a recorder and
+why the downlink is store-and-forward, and it is why the schema has a `passes`
+table at all — the windows are the unit of operations.
+
+The simulator therefore runs on a **simulated clock** (`--time-scale`) that
+advances faster than the wall clock, and starts far enough in the past that a
+run ends at about the present. Frames are stamped with that simulated time;
+`received_at` remains the ground clock.
+
+Received signal strength is stamped at *downlink*, not at recording. It is a
+property of the link, and while a frame is being recorded there is usually no
+link — which is also why it steps rather than curves when plotted against
+recording time.
+
 ## Detection in two tiers
 
 `worker/rules.py` holds documented limits: an operator can point at the number

@@ -37,6 +37,14 @@ log = logging.getLogger("mgs.worker")
 # two excursions.
 EPISODIC_RULES = frozenset({"BATTERY_LOW", "TEMP_HIGH", "TEMP_LOW", "SAFE_MODE", "ML_OUTLIER"})
 
+# On reproducibility. The threshold and gap rules depend only on the frame in
+# front of them, so they are the same however the work is divided. `ML_OUTLIER`
+# depends on the history screened *before* it, so it is reproducible from the
+# same starting state — re-screening a whole day gives the same alerts every
+# time — but a worker that screened each pass as it landed had less history
+# than one screening the day in bulk, and may reasonably disagree. That is a
+# property of any online detector, not a defect.
+
 SEVERITY_ORDER = {"info": 0, "warning": 1, "critical": 2}
 
 
@@ -48,12 +56,20 @@ SEVERITY_ORDER = {"info": 0, "warning": 1, "critical": 2}
 SCREENING_LOCK_KEY = 0x6D67_7301
 
 
-def claim_screening_lock(session: Session) -> bool:
-    """Take the advisory lock for this batch, or report that someone else has it.
+def claim_screening_lock(session: Session, *, wait: bool = False) -> bool:
+    """Take the advisory lock for this batch.
 
     The lock is held for the transaction, so a worker that crashes mid-batch
     releases it when its connection dies — there is nothing to clean up.
+
+    A polling worker does not wait: it will look again in a few seconds. A
+    one-shot run does, because "someone else is screening" and "there is
+    nothing left to screen" are different answers, and exiting on the first as
+    if it were the second leaves the whole backlog sitting there.
     """
+    if wait:
+        session.execute(select(func.pg_advisory_xact_lock(SCREENING_LOCK_KEY)))
+        return True
     return bool(session.scalar(select(func.pg_try_advisory_xact_lock(SCREENING_LOCK_KEY))))
 
 
@@ -74,13 +90,25 @@ def fetch_unscreened(session: Session, limit: int) -> list[Telemetry]:
     return list(session.scalars(stmt))
 
 
-def training_history(session: Session, satellite_id: str, settings: Settings) -> list[Telemetry]:
-    cutoff = datetime.now(UTC) - timedelta(hours=settings.ml_training_window_hours)
+def training_history(
+    session: Session, satellite_id: str, settings: Settings, before: datetime
+) -> list[Telemetry]:
+    """The window of already-screened telemetry the detector learns from.
+
+    The window is anchored to the *telemetry*, not to the wall clock. Anchoring
+    it to `now()` breaks the moment screening is not live: replaying a week-old
+    dump would find an empty training set and silently score nothing, and two
+    screenings of the same data minutes apart would train on slightly different
+    sets and disagree. Ending the window at the batch also keeps it causal — no
+    frame is scored against history recorded after it.
+    """
+    cutoff = before - timedelta(hours=settings.ml_training_window_hours)
     stmt = (
         select(Telemetry)
         .where(
             Telemetry.satellite_id == satellite_id,
             Telemetry.recorded_at >= cutoff,
+            Telemetry.recorded_at < before,
             Telemetry.screened_at.is_not(None),
         )
         .order_by(Telemetry.recorded_at)
@@ -136,9 +164,11 @@ def _insert_point_alerts(session: Session, findings: list[Finding]) -> int:
     return len(session.execute(stmt).scalars().all())
 
 
-def screen_once(session: Session, settings: Settings) -> tuple[int, int]:
+def screen_once(
+    session: Session, settings: Settings, *, wait_for_lock: bool = False
+) -> tuple[int, int]:
     """Screen one batch. Returns (frames screened, alerts opened)."""
-    if not claim_screening_lock(session):
+    if not claim_screening_lock(session, wait=wait_for_lock):
         log.debug("another worker is screening; standing by")
         return 0, 0
 
@@ -156,10 +186,12 @@ def screen_once(session: Session, settings: Settings) -> tuple[int, int]:
     opened = 0
 
     for satellite_id, satellite_frames in by_satellite.items():
-        detector = AnomalyDetector(satellite_id, settings)
-        detector.fit(training_history(session, satellite_id, settings))
-
         satellite_frames.sort(key=lambda f: f.seq)
+        anchor = min(frame.recorded_at for frame in satellite_frames)
+
+        detector = AnomalyDetector(satellite_id, settings)
+        detector.fit(training_history(session, satellite_id, settings, anchor))
+
         prev = previous_seq(session, satellite_id, satellite_frames[0].seq)
 
         for frame in satellite_frames:

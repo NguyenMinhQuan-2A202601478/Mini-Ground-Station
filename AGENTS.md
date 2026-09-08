@@ -47,6 +47,11 @@ screens it for anomalies. Three processes, one database:
   three is incomplete until all three agree.
 - `docs/ARCHITECTURE.md` is authoritative for process boundaries — what runs
   where, and why screening is not done inside the request path.
+- Orbital geometry comes from SGP4 against a real element set
+  (`src/mgs/simulator/orbit.py`, `tle.py`). Do not replace any of it with an
+  approximation that makes passes more frequent or more convenient: the long
+  silences between passes are the constraint the rest of the design answers
+  to (`docs/decisions/0004`).
 - Thresholds are configuration (`Settings` in `src/mgs/config.py`), not policy.
   Changing a default limit changes what operators are woken up for: say so. The
   dashboard reads those limits from `/api/v1/summary` rather than hard-coding

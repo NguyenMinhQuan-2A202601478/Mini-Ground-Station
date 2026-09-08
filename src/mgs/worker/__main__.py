@@ -65,7 +65,7 @@ def main(argv: list[str] | None = None) -> int:
     while not _stop:
         try:
             with session_factory() as session:
-                screened, raised = screen_once(session, settings)
+                screened, raised = screen_once(session, settings, wait_for_lock=args.once)
             total_frames += screened
             total_alerts += raised
             if args.once and screened == 0:

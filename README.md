@@ -1,8 +1,10 @@
 # mini-ground-station
 
-A miniature satellite ground station. A simulated spacecraft flies an orbit and
-downlinks telemetry while it is in view; a FastAPI service ingests those frames
-into PostgreSQL; a background worker screens them and raises alerts.
+A miniature satellite ground station. A simulated spacecraft flies a **real
+orbit** — SGP4 against a published TLE — and downlinks telemetry during the
+contact windows that geometry actually gives it; a FastAPI service ingests
+those frames into PostgreSQL; a background worker screens them and raises
+alerts.
 
 ```
 simulated satellite  ──HTTP──>  FastAPI ingestion  ──>  PostgreSQL
@@ -11,8 +13,8 @@ simulated satellite  ──HTTP──>  FastAPI ingestion  ──>  PostgreSQL
                                                             └──> query API ──> dashboard
 ```
 
-The hardware and RF layers are simulated. Everything from the ingestion API
-downwards is the real thing.
+The hardware and RF layers are simulated. The orbital mechanics are not, and
+everything from the ingestion API downwards is the real thing.
 
 ## Layout
 
@@ -24,7 +26,7 @@ downwards is the real thing.
 | `src/mgs/api/` | FastAPI app and routes |
 | `src/mgs/api/static/` | The dashboard — one HTML page, no build step |
 | `src/mgs/worker/` | Threshold rules, statistical detector, screening loop |
-| `src/mgs/simulator/` | Orbit propagation and spacecraft health model |
+| `src/mgs/simulator/` | SGP4 propagation, TLE handling, spacecraft health model |
 | `migrations/` | Alembic migrations |
 | `Dockerfile`, `docker-compose.yml` | One image, three processes, one command |
 | `.github/workflows/ci.yml` | Lint, tests, and a container smoke run |
@@ -66,7 +68,7 @@ Then run the three processes, each in its own terminal:
 ```bash
 mgs-api                          # http://localhost:8000/docs
 mgs-worker                       # screens telemetry, writes alerts
-mgs-sim --orbits 3               # flies 3 orbits and downlinks
+mgs-sim --duration 24h           # flies a day of real passes, compressed
 ```
 
 Then open **<http://localhost:8000/>** — the dashboard: live battery, temperature
@@ -80,6 +82,48 @@ curl -s 'localhost:8000/api/v1/telemetry/series?buckets=20' | jq
 ```
 
 `make demo` does all of it in one shot.
+
+## The orbit is real
+
+A single ground station sees a low-Earth satellite for about **1% of the day**.
+That is the fact the whole design turns on, and it is the one a toy circular
+orbit cannot produce — the first version of this simulator had to shift the
+ground track over the station to manufacture a pass every orbit, which quietly
+deleted the problem.
+
+Now positions come from SGP4 against a published element set, and a demo day
+over Hanoi looks like this:
+
+```
+predicted pass  AOS 10:27:55   1.9 min  max elevation  5.5°
+predicted pass  AOS 12:01:06   8.4 min  max elevation 55.7°
+predicted pass  AOS 20:15:53   6.4 min  max elevation 13.8°
+predicted pass  AOS 21:51:58   7.8 min  max elevation 27.0°
+```
+
+Four windows, two clusters, thirteen hours of silence in the middle — and pass
+quality decides how much data comes down. In that run the 1.9-minute graze
+cleared 235 frames off the recorder; the 8.4-minute overhead pass cleared 733.
+When a silence outlasts the recorder, the oldest frames are overwritten and
+show up on the ground as a `DATA_GAP`.
+
+Everything geometric follows from the propagation: slant range, azimuth and
+elevation, range rate, Doppler shift (±9 kHz at 437 MHz), eclipse, and received
+power from free-space path loss. Reasoning:
+[`decisions/0004`](docs/decisions/0004-real-orbit-propagation.md).
+
+### Element sets
+
+The repository ships a real ISS element set so the simulator, the tests, and CI
+all run offline. It ages — SGP4 drifts about a kilometre a day from its epoch —
+and the simulator says so when it is more than a fortnight old.
+
+```bash
+mgs-sim --fetch-tle                     # a current element set from Celestrak
+mgs-sim --catalog-number 43013          # some other satellite
+mgs-sim --tle-file ./mysat.tle          # your own
+mgs-sim --station-lat 10.82 --station-lon 106.63 --station-id SAIGON-GS
+```
 
 ## The three tables
 

@@ -60,6 +60,10 @@ const CHARTS = [
     lo: null,
     hi: null,
     limits: () => [],
+    // Received power belongs to the moment of *reception*, not of recording:
+    // one measurement covers the whole burst downlinked at that instant, which
+    // is why it steps rather than curves.
+    hint: "measured at the station as each burst came down",
   },
 ];
 
@@ -136,14 +140,17 @@ function segments(points, key, x, y) {
 
 /* ------------------------------------------------------------------ fetch */
 
-function windowFor(range, passes) {
-  const now = new Date();
+function windowFor(range, passes, summary) {
+  // Relative to the newest telemetry, not to the wall clock. The simulator
+  // replays a real day of passes faster than a day, and a station that has
+  // been offline still wants its last hours of data rather than an empty page.
+  const latest = summary && summary.latest ? new Date(summary.latest.recorded_at) : new Date();
   if (range === "all") return {};
-  if (range === "1h") return { since: new Date(now - 3600e3) };
-  if (range === "24h") return { since: new Date(now - 86400e3) };
+  if (range === "1h") return { since: new Date(latest - 3600e3) };
+  if (range === "24h") return { since: new Date(latest - 86400e3) };
   const wanted = range === "pass" ? 1 : 3;
   const recent = passes.slice(0, wanted);
-  if (!recent.length) return { since: new Date(now - 3600e3) };
+  if (!recent.length) return { since: new Date(latest - 3600e3) };
   return { since: new Date(recent[recent.length - 1].aos_at) };
 }
 
@@ -165,7 +172,7 @@ async function load() {
     }
     renderSatellites(satellites);
 
-    const win = windowFor(state.range, passes);
+    const win = windowFor(state.range, passes, summary);
     const q = new URLSearchParams();
     if (state.satellite) q.set("satellite_id", state.satellite);
     if (win.since) q.set("since", win.since.toISOString());
@@ -367,10 +374,16 @@ function drawChart(cfg) {
     if (b < t0 || a > t1) continue;
     const xa = Math.max(padL, tx(a));
     const xb = Math.min(width - padR, tx(b));
-    if (xb <= xa) continue;
+    if (xb < xa) continue;
+    // A contact window is minutes long inside a range that is hours long, so
+    // to scale it is a fraction of a pixel. Floor it at 3px: the band marks
+    // *where* a pass was, it does not encode how long it lasted — the passes
+    // table carries the durations.
+    const bandWidth = Math.max(3, xb - xa);
     root.appendChild(
       svg("rect", {
-        x: xa, y: padT, width: xb - xa, height: plotH,
+        x: Math.min(xa, width - padR - bandWidth), y: padT,
+        width: bandWidth, height: plotH,
         fill: "var(--pass-band)",
       }),
     );
@@ -508,8 +521,11 @@ function drawChart(cfg) {
     root.appendChild(text);
   }
 
-  card.querySelector(".hint").textContent =
-    `${cfg.unit} · avg with min–max band per ${state.series.bucket_seconds.toFixed(1)}s bucket`;
+  const bucket = state.series.bucket_seconds;
+  const per = bucket >= 90 ? `${(bucket / 60).toFixed(1)} min` : `${bucket.toFixed(1)}s`;
+  card.querySelector(".hint").textContent = cfg.hint
+    ? `${cfg.unit} · ${cfg.hint}`
+    : `${cfg.unit} · avg with min–max band per ${per} bucket`;
 
   attachHover(cfg, root, plot, points, x, y, { padL, padR, padT, plotH, width });
   renderTable(cfg, card, points);
@@ -682,6 +698,8 @@ function renderPasses() {
 
   const head = el("tr");
   for (const c of ["Pass", "AOS", "Duration", "Max elev.", "Frames", "Status"]) {
+    // Max elevation is the number that decides how much of the backlog a pass
+    // can actually clear: a 5° graze is a fraction of an overhead pass.
     head.appendChild(el("th", null, c));
   }
   table.appendChild(head);

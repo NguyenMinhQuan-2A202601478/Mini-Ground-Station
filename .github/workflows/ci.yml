@@ -94,13 +94,16 @@ jobs:
           echo "tables: $tables"
           [ "$tables" = "3" ]
 
-      - name: Fly two orbits
+      - name: Fly a day of real passes
         run: |
+          # No --fetch-tle: the bundled element set keeps CI deterministic and
+          # off the network. Refreshing it is a deliberate, reviewable commit.
           docker compose --profile demo run --rm \
-            -e MGS_SIM_ORBIT_SECONDS=24 -e MGS_SIM_FRAME_INTERVAL_SECONDS=0.05 \
-            sim mgs-sim --orbits 2 --seed 7
+            sim mgs-sim --duration 24h --time-scale 20000 --seed 7
 
       - name: Screen the backlog
+        # --once waits for the long-running worker's advisory lock rather than
+        # treating "someone else is screening" as "nothing left to screen".
         run: docker compose run --rm worker mgs-worker --once
 
       - name: Telemetry, passes, and alerts all landed
@@ -114,6 +117,7 @@ jobs:
           echo "frames=$frames passes=$passes alerts=$alerts unscreened=$unscreened"
           [ "$frames" -gt 500 ] || { echo "::error::too few frames ingested"; exit 1; }
           [ "$passes" -ge 2 ] || { echo "::error::the simulator never made a pass"; exit 1; }
+          [ "$passes" -le 10 ] || { echo "::error::$passes passes in a day is not orbital mechanics"; exit 1; }
           [ "$alerts" -gt 0 ] || { echo "::error::the worker raised nothing at all"; exit 1; }
           [ "$unscreened" = "0" ] || { echo "::error::the worker left frames unscreened"; exit 1; }
 
@@ -128,16 +132,25 @@ jobs:
 
       - name: Re-screening the same frames raises no duplicates
         run: |
-          # Stop the long-running worker so the one-shot below is the only one
-          # screening; otherwise the two race for the backlog and the numbers
-          # say nothing about idempotency.
+          # Stop the long-running worker so the one-shot runs below are the only
+          # ones screening, and compare two runs from the *same* starting state.
+          # Comparing a bulk re-screen against the live worker's incremental one
+          # would not test idempotency: the statistical detector is fitted on
+          # whatever history had been screened at the time, so it legitimately
+          # differs between the two schedules.
           docker compose stop worker
-          before=$(docker compose exec -T db psql -U mgs -d mgs -tAc "SELECT count(*) FROM alerts")
-          docker compose exec -T db psql -U mgs -d mgs -c "UPDATE telemetry SET screened_at = NULL" >/dev/null
-          docker compose run --rm worker mgs-worker --once >/dev/null
-          after=$(docker compose exec -T db psql -U mgs -d mgs -tAc "SELECT count(*) FROM alerts")
-          echo "alerts before=$before after=$after"
-          [ "$before" = "$after" ] || { echo "::error::re-screening duplicated alerts"; exit 1; }
+          screen () {
+            docker compose exec -T db psql -U mgs -d mgs -c \
+              "TRUNCATE alerts; UPDATE telemetry SET screened_at = NULL" >/dev/null
+            docker compose run --rm worker mgs-worker --once >/dev/null
+            docker compose exec -T db psql -U mgs -d mgs -tAF, -c \
+              "SELECT rule, severity, count(*) FROM alerts GROUP BY 1,2 ORDER BY 1,2"
+          }
+          first=$(screen); second=$(screen)
+          echo "run 1:"; echo "$first"
+          echo "run 2:"; echo "$second"
+          [ "$first" = "$second" ] || { echo "::error::screening is not reproducible"; exit 1; }
+          [ -n "$first" ] || { echo "::error::screening raised nothing at all"; exit 1; }
           docker compose start worker
 
       - name: Logs

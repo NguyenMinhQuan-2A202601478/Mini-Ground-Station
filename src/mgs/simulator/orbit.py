@@ -1,10 +1,16 @@
-"""A deliberately small orbit + spacecraft-health model.
+"""Real orbit propagation: SGP4 against a published element set.
 
-Not an SGP4 propagator. It produces plausible, *self-consistent* numbers: the
-satellite goes round, is only in view of the station for part of each orbit,
-its battery charges in sunlight and drains in eclipse, and its temperature
-follows the same sun angle. That is enough to exercise the ingestion path,
-the pass logic, and the anomaly rules.
+This replaces a hand-rolled circular-orbit model that had to cheat — it
+anchored the ground track over the station so that every orbit produced a
+pass. Real geometry does not work that way, and the difference is the whole
+point: a low-Earth satellite is in view of one station for about ten minutes,
+a few times a day, in clusters separated by long silences. Scheduling around
+that silence is what a ground station *is*.
+
+Positions come from Skyfield's SGP4, the same propagator the published TLEs
+are meant to be used with. Look angles, ranges, and range rates are the real
+ones; the spacecraft's battery and thermal behaviour is still a model, but it
+is now driven by real eclipse geometry and a real orbital period.
 """
 
 from __future__ import annotations
@@ -12,107 +18,216 @@ from __future__ import annotations
 import math
 import random
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 
-EARTH_RADIUS_KM = 6371.0
-INCLINATION_DEG = 51.6  # ISS-like
-ALTITUDE_KM = 420.0
+import numpy as np
+from skyfield.api import EarthSatellite, load, wgs84
 
-# Phase at which the ground track reaches the northern latitude of the station.
-# The simulator anchors the track here (see `anchor_offset_deg`) so the station
-# actually gets a pass every orbit. A real propagator would not: with a true
-# ground track, most orbits miss a given station entirely, and you would wait
-# hours between passes. That is the wrong trade for a development feed.
-CLOSEST_APPROACH_PHASE = 0.4245
+from mgs.simulator.tle import TLE
 
+EARTH_RADIUS_KM = 6378.137
+SPEED_OF_LIGHT_KM_S = 299792.458
 
-@dataclass(frozen=True)
-class State:
-    """The spacecraft at one instant of simulated time."""
+# A 70 cm amateur/cubesat downlink, which is what most of these spacecraft use.
+DOWNLINK_FREQ_MHZ = 437.5
+SPACECRAFT_EIRP_DBM = 30.0  # ~1 W into a modest antenna
+STATION_GAIN_DBI = 15.0
+ZENITH_ATMOSPHERIC_LOSS_DB = 0.5
 
-    phase: float  # 0..1 through the orbit
-    lat_deg: float
-    lon_deg: float
-    alt_km: float
-    elevation_deg: float  # as seen from the ground station; < 0 means below horizon
-    in_sunlight: bool
-
-    @property
-    def in_view(self) -> bool:
-        return self.elevation_deg > 0.0
+# Skyfield builds its own timescale from bundled leap-second data, so nothing
+# here touches the network.
+_TIMESCALE = load.timescale()
 
 
 @dataclass(frozen=True)
 class GroundStation:
-    identifier: str
-    lat_deg: float = 21.03  # Hanoi
-    lon_deg: float = 105.85
+    """Where the dish is. Real coordinates, because the geometry is real."""
+
+    identifier: str = "HANOI-GS"
+    lat_deg: float = 21.0278
+    lon_deg: float = 105.8342
+    elevation_m: float = 20.0
+    # Below this the spacecraft is behind terrain and clutter, not merely low.
+    min_elevation_deg: float = 5.0
 
 
-def raw_track(phase: float) -> tuple[float, float]:
-    """Sub-satellite latitude/longitude for a circular inclined orbit."""
-    theta = 2.0 * math.pi * phase
-    inc = math.radians(INCLINATION_DEG)
-    lat = math.asin(math.sin(inc) * math.sin(theta))
-    lon = math.atan2(math.cos(inc) * math.sin(theta), math.cos(theta))
-    return math.degrees(lat), math.degrees(lon)
+@dataclass(frozen=True)
+class LookAngles:
+    elevation_deg: float
+    azimuth_deg: float
+    range_km: float
+    # Negative while the satellite is approaching, positive as it recedes.
+    range_rate_km_s: float
+
+    @property
+    def doppler_hz(self) -> float:
+        return -DOWNLINK_FREQ_MHZ * 1e6 * self.range_rate_km_s / SPEED_OF_LIGHT_KM_S
 
 
-def anchor_offset_deg(station: GroundStation, orbit_index: int = 0) -> float:
-    """Longitude shift that brings this orbit's closest approach over the station.
+@dataclass(frozen=True)
+class State:
+    """The spacecraft, and how the station sees it, at one instant."""
 
-    `orbit_index` wanders the track a little so successive passes differ in
-    maximum elevation instead of being identical overhead passes.
+    when: datetime
+    lat_deg: float
+    lon_deg: float
+    alt_km: float
+    look: LookAngles
+    in_sunlight: bool
+    in_view: bool
+
+
+@dataclass(frozen=True)
+class PassWindow:
+    aos: datetime
+    tca: datetime  # time of closest approach — the culmination
+    los: datetime
+    max_elevation_deg: float
+
+    @property
+    def duration(self) -> timedelta:
+        return self.los - self.aos
+
+
+def sun_direction(when: datetime) -> np.ndarray:
+    """Unit vector to the Sun in the equatorial frame.
+
+    The low-precision series from the Astronomical Almanac: good to about
+    0.01°, which is four orders of magnitude better than an eclipse test needs,
+    and it avoids shipping a 17 MB planetary ephemeris to answer "is it in the
+    Earth's shadow".
     """
-    _, track_lon = raw_track(CLOSEST_APPROACH_PHASE)
-    wander = 11.0 * math.sin(orbit_index * 1.7)
-    return station.lon_deg - track_lon + wander
-
-
-def propagate(phase: float, station: GroundStation, lon_offset_deg: float = 0.0) -> State:
-    """Position and visibility at a fractional point through the orbit."""
-    lat_deg, track_lon_deg = raw_track(phase)
-    lon_deg = (track_lon_deg + lon_offset_deg + 180.0) % 360.0 - 180.0
-
-    elevation = _elevation(lat_deg, lon_deg, ALTITUDE_KM, station)
-    # Eclipse for roughly a third of the orbit, offset from the pass window.
-    in_sunlight = not (0.55 <= phase < 0.90)
-
-    return State(
-        phase=phase,
-        lat_deg=lat_deg,
-        lon_deg=lon_deg,
-        alt_km=ALTITUDE_KM,
-        elevation_deg=elevation,
-        in_sunlight=in_sunlight,
+    t = _TIMESCALE.from_datetime(when)
+    n = t.tt - 2451545.0
+    mean_longitude = math.radians((280.460 + 0.9856474 * n) % 360.0)
+    mean_anomaly = math.radians((357.528 + 0.9856003 * n) % 360.0)
+    ecliptic_longitude = (
+        mean_longitude
+        + math.radians(1.915) * math.sin(mean_anomaly)
+        + math.radians(0.020) * math.sin(2 * mean_anomaly)
+    )
+    obliquity = math.radians(23.439 - 4.0e-7 * n)
+    return np.array(
+        [
+            math.cos(ecliptic_longitude),
+            math.cos(obliquity) * math.sin(ecliptic_longitude),
+            math.sin(obliquity) * math.sin(ecliptic_longitude),
+        ]
     )
 
 
-def _elevation(lat: float, lon: float, alt_km: float, station: GroundStation) -> float:
-    """Elevation angle of the satellite above the station's horizon, in degrees."""
-    central = _great_circle_rad(lat, lon, station.lat_deg, station.lon_deg)
-    r = EARTH_RADIUS_KM
-    # Standard look-angle geometry for a spherical Earth.
-    denom = math.sin(central)
-    if denom < 1e-9:
-        return 90.0
-    return math.degrees(math.atan((math.cos(central) - r / (r + alt_km)) / denom))
+def is_sunlit(position_km: np.ndarray, sun: np.ndarray) -> bool:
+    """Cylindrical shadow test: behind the Earth, and within its silhouette."""
+    along_sun = float(np.dot(position_km, sun))
+    if along_sun > 0.0:
+        return True  # on the sunward side of the Earth
+    perpendicular = float(np.linalg.norm(position_km - along_sun * sun))
+    return perpendicular > EARTH_RADIUS_KM
 
 
-def _great_circle_rad(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    p1, p2 = math.radians(lat1), math.radians(lat2)
-    dlon = math.radians(lon2 - lon1)
-    cos_c = math.sin(p1) * math.sin(p2) + math.cos(p1) * math.cos(p2) * math.cos(dlon)
-    return math.acos(max(-1.0, min(1.0, cos_c)))
+class Propagator:
+    """One satellite, one ground station, real geometry between them."""
+
+    def __init__(self, tle: TLE, station: GroundStation) -> None:
+        self.tle = tle
+        self.station = station
+        self.satellite = EarthSatellite(tle.line1, tle.line2, tle.name, _TIMESCALE)
+        self._topos = wgs84.latlon(
+            station.lat_deg, station.lon_deg, elevation_m=station.elevation_m
+        )
+        self._relative = self.satellite - self._topos
+
+    @property
+    def name(self) -> str:
+        return self.tle.name
+
+    @property
+    def period(self) -> timedelta:
+        """Orbital period, from the element set's own mean motion."""
+        revs_per_day = self.satellite.model.no_kozai * 1440.0 / (2.0 * math.pi)
+        return timedelta(days=1.0 / revs_per_day)
+
+    def at(self, when: datetime) -> State:
+        t = _TIMESCALE.from_datetime(_as_utc(when))
+        geocentric = self.satellite.at(t)
+        subpoint = wgs84.subpoint(geocentric)
+
+        altitude, azimuth, distance, _, _, range_rate = self._relative.at(t).frame_latlon_and_rates(
+            self._topos
+        )
+        look = LookAngles(
+            elevation_deg=altitude.degrees,
+            azimuth_deg=azimuth.degrees % 360.0,
+            range_km=distance.km,
+            range_rate_km_s=range_rate.km_per_s,
+        )
+        return State(
+            when=when,
+            lat_deg=subpoint.latitude.degrees,
+            lon_deg=subpoint.longitude.degrees,
+            alt_km=subpoint.elevation.km,
+            look=look,
+            in_sunlight=is_sunlit(geocentric.position.km, sun_direction(when)),
+            in_view=look.elevation_deg >= self.station.min_elevation_deg,
+        )
+
+    def passes(self, start: datetime, end: datetime) -> list[PassWindow]:
+        """Every contact window in the interval, the way a scheduler asks for it."""
+        t0 = _TIMESCALE.from_datetime(_as_utc(start))
+        t1 = _TIMESCALE.from_datetime(_as_utc(end))
+        times, events = self.satellite.find_events(
+            self._topos, t0, t1, altitude_degrees=self.station.min_elevation_deg
+        )
+
+        windows: list[PassWindow] = []
+        aos: datetime | None = None
+        tca: datetime | None = None
+        peak = 0.0
+        for time, event in zip(times, events, strict=True):
+            when = time.utc_datetime()
+            if event == 0:  # rise
+                aos, tca, peak = when, None, 0.0
+            elif event == 1 and aos is not None:  # culminate
+                tca = when
+                peak = self.at(when).look.elevation_deg
+            elif event == 2 and aos is not None:  # set
+                windows.append(
+                    PassWindow(aos=aos, tca=tca or aos, los=when, max_elevation_deg=peak)
+                )
+                aos, tca, peak = None, None, 0.0
+        return windows
+
+    def signal_strength_dbm(self, look: LookAngles, rng: random.Random) -> float:
+        """Received power from the link geometry, not from a fudge factor.
+
+        Free-space path loss grows with range, which is why a pass that only
+        reaches 15° is quieter throughout than one that goes overhead: at 5°
+        the spacecraft is four times further away than at zenith.
+        """
+        fspl_db = (
+            20.0 * math.log10(max(look.range_km, 1.0))
+            + 20.0 * math.log10(DOWNLINK_FREQ_MHZ)
+            + 32.44
+        )
+        elevation = max(look.elevation_deg, 1.0)
+        atmospheric_db = ZENITH_ATMOSPHERIC_LOSS_DB / math.sin(math.radians(elevation))
+        return (
+            SPACECRAFT_EIRP_DBM + STATION_GAIN_DBI - fspl_db - atmospheric_db + rng.gauss(0.0, 1.2)
+        )
+
+
+def _as_utc(when: datetime) -> datetime:
+    return when if when.tzinfo else when.replace(tzinfo=UTC)
 
 
 @dataclass
 class Spacecraft:
-    """Battery, thermal, and mode state, integrated frame by frame.
+    """Battery, thermal, and mode state, integrated along the orbit.
 
-    Every rate below is **per orbit**, and `step` is driven by how much of an
-    orbit elapsed rather than by wall-clock seconds. That keeps the physics
-    identical whether an orbit is compressed into 30 seconds or played out at
-    90 minutes, and whether frames arrive 20 times a second or once a second.
+    Rates are per *orbit*, and `step` is driven by how much of an orbit
+    elapsed. The physics is then the same whether the recorder samples every
+    second or every minute, and whether the run is played at real speed or
+    compressed a thousandfold.
     """
 
     battery_voltage_v: float = 8.0
@@ -125,7 +240,7 @@ class Spacecraft:
     BATTERY_FULL_V = 8.4
     BATTERY_EMPTY_V = 6.0
 
-    # Volts gained/lost over one full orbit spent entirely in that condition.
+    # Volts gained or lost over one full orbit spent entirely in that condition.
     CHARGE_V_PER_ORBIT = 2.5
     ECLIPSE_DRAIN_V_PER_ORBIT = 3.4
     TRANSMIT_DRAIN_V_PER_ORBIT = 0.5
@@ -178,14 +293,9 @@ class Spacecraft:
         if self._fault_kind == "battery_sag":
             self.battery_voltage_v -= 18.0 * self._fault_gain * dphase
         elif self._fault_kind == "thermal_spike":
-            self.temperature_c += 700.0 * self._fault_gain * dphase
+            self.temperature_c += 300.0 * self._fault_gain * dphase
         elif self._fault_kind == "cold_soak":
-            self.temperature_c -= 500.0 * self._fault_gain * dphase
+            self.temperature_c -= 260.0 * self._fault_gain * dphase
         if self._fault_phase_left == 0.0:
             self._fault_kind = None
             self._fault_gain = 1.0
-
-    def signal_strength_dbm(self, state: State, rng: random.Random) -> float:
-        """Stronger the higher the satellite is in the sky."""
-        base = -110.0 + 0.45 * max(0.0, state.elevation_deg)
-        return base + rng.gauss(0, 1.5)

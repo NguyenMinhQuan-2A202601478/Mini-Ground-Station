@@ -37,12 +37,25 @@ class Settings(BaseSettings):
     zscore_threshold: float = 3.0
     worker_batch_size: int = 500
 
+    # Ground station — real coordinates, because the pass geometry is real.
+    station_id: str = "HANOI-GS"
+    station_lat_deg: float = 21.0278
+    station_lon_deg: float = 105.8342
+    station_elevation_m: float = 20.0
+    # Below this the spacecraft is behind terrain and clutter, not merely low.
+    station_min_elevation_deg: float = 5.0
+
     # Simulator
     sim_api_url: str = "http://localhost:8000"
-    sim_satellite_id: str = "VNSAT-1"
-    sim_ground_station_id: str = "HANOI-GS"
-    sim_orbit_seconds: float = 120.0
-    sim_frame_interval_seconds: float = 1.0
+    # Empty means "use the name in the element set".
+    sim_satellite_id: str = ""
+    sim_catalog_number: int = 25544  # the ISS
+    sim_duration: str = "24h"  # of mission time, per run
+    sim_time_scale: float = 600.0  # simulated seconds per second of wall clock
+    sim_record_interval_seconds: float = 30.0
+    sim_downlink_rate: float = 2.0  # frames per simulated second while in contact
+    sim_onboard_capacity: int = 4096
+    sim_drop_rate: float = 0.02
     sim_fault_rate: float = 1.5  # expected injected faults per orbit
 
 
