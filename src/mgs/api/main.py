@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 
 from mgs import __version__
 from mgs.api.routes import alerts, dashboard, health, passes, telemetry
+from mgs.api.security import HEADER, configured_keys
 from mgs.config import get_settings
 
 
@@ -19,7 +20,15 @@ async def lifespan(app: FastAPI):
     logging.basicConfig(
         level=settings.log_level, format="%(asctime)s %(levelname)s %(name)s %(message)s"
     )
-    logging.getLogger("mgs").info("ground station API up, db=%s", _redact(settings.database_url))
+    logger = logging.getLogger("mgs")
+    logger.info("ground station API up, db=%s", _redact(settings.database_url))
+    if configured_keys(settings):
+        logger.info("write endpoints require %s", HEADER)
+    else:
+        logger.warning(
+            "MGS_API_KEYS is empty: anyone who can reach this port can inject "
+            "telemetry and resolve alerts"
+        )
     yield
 
 

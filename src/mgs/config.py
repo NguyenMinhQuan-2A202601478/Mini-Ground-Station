@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"
     api_port: int = 8000
     log_level: str = "INFO"
+    # Comma-separated keys accepted on writing endpoints. Empty disables the
+    # check, which the API reports at startup and on /health.
+    api_keys: str = ""
 
     # Worker — deterministic threshold rules
     poll_interval_seconds: float = 10.0
@@ -28,6 +31,10 @@ class Settings(BaseSettings):
     temp_max_c: float = 60.0
     temp_min_c: float = -30.0
     max_seq_gap: int = 1  # frames may arrive out of order; a gap > this is a DATA_GAP
+    # A condition has to stay quiet this long before its alert is resolved.
+    # Without it a single normal frame in the middle of an excursion closes the
+    # episode and the next frame opens another one.
+    alert_clear_after_seconds: float = 120.0
 
     # Worker — statistical detector (optional, needs the `ml` extra)
     enable_ml: bool = True
@@ -36,6 +43,11 @@ class Settings(BaseSettings):
     ml_contamination: float = 0.02
     zscore_threshold: float = 3.0
     worker_batch_size: int = 500
+
+    # Retention. 0 keeps telemetry forever, which is the safe default and not a
+    # sustainable one: see `mgs.retention`.
+    retention_days: float = 0.0  # fractional days are allowed, for short policies
+    retention_batch_size: int = 5000
 
     # Ground station — real coordinates, because the pass geometry is real.
     station_id: str = "HANOI-GS"
@@ -47,6 +59,7 @@ class Settings(BaseSettings):
 
     # Simulator
     sim_api_url: str = "http://localhost:8000"
+    sim_api_key: str = ""  # sent as X-API-Key on every write
     # Empty means "use the name in the element set".
     sim_satellite_id: str = ""
     sim_catalog_number: int = 25544  # the ISS

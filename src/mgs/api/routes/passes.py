@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from mgs.api.security import require_api_key
 from mgs.db import get_session
 from mgs.ingest import close_pass, current_pass, open_pass
 from mgs.models import Pass
@@ -14,7 +15,7 @@ from mgs.schemas import PassClose, PassOpen, PassOut
 router = APIRouter(prefix="/passes", tags=["passes"])
 
 
-@router.post("", response_model=PassOut, status_code=201)
+@router.post("", response_model=PassOut, status_code=201, dependencies=[Depends(require_api_key)])
 def post_pass(body: PassOpen, session: Session = Depends(get_session)) -> Pass:
     """Open a contact window (AOS). Idempotent per satellite."""
     return open_pass(
@@ -26,7 +27,7 @@ def post_pass(body: PassOpen, session: Session = Depends(get_session)) -> Pass:
     )
 
 
-@router.post("/{pass_id}/close", response_model=PassOut)
+@router.post("/{pass_id}/close", response_model=PassOut, dependencies=[Depends(require_api_key)])
 def post_close_pass(pass_id: int, body: PassClose, session: Session = Depends(get_session)) -> Pass:
     """Close a contact window (LOS)."""
     row = session.get(Pass, pass_id)

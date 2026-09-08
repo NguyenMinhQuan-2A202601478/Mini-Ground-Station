@@ -116,6 +116,7 @@ class AlertOut(BaseModel):
     detected_at: datetime
     acknowledged_at: datetime | None
     resolved_at: datetime | None
+    clearing_since: datetime | None
 
 
 class AlertAck(BaseModel):
@@ -126,6 +127,8 @@ class Health(BaseModel):
     status: Literal["ok", "degraded"]
     database: bool
     version: str
+    # "disabled" means every write endpoint is open to anyone who can reach it.
+    auth: Literal["enabled", "disabled"]
 
 
 # --- Dashboard ------------------------------------------------------------

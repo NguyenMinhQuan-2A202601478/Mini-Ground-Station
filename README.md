@@ -149,6 +149,12 @@ Full reasoning: [`docs/product/schema.md`](docs/product/schema.md).
 | `DATA_GAP` | on-board sequence numbers jumped — frames lost on the downlink |
 | `ML_OUTLIER` | IsolationForest over a rolling window, z-score while cold-starting |
 
+An alert describes an *episode*, not a frame, and a condition has to stay quiet
+for `MGS_ALERT_CLEAR_AFTER_SECONDS` before its alert resolves — one normal
+frame in the middle of an excursion is not the end of it. Before that quiet
+period existed, `ML_OUTLIER` reopened eleven times in a day of real telemetry,
+seven of them within five minutes, the shortest gap being a single frame.
+
 The threshold rules need no dependencies. The statistical layer needs the `ml`
 extra; without it the worker degrades to z-score rather than failing.
 
@@ -169,10 +175,43 @@ a correlation that is not in the data.
 - Every chart has a table view (the "Table view" button), a crosshair tooltip,
   and keyboard navigation with the arrow keys.
 
+## Operating it
+
+**Writes need a key.** Ingest, pass management, and acknowledging an alert all
+require `X-API-Key`; reading does not.
+
+```bash
+MGS_API_KEYS=a-real-key mgs-api
+mgs-sim --api-key a-real-key
+curl -s localhost:8000/health | jq .auth      # "enabled" or "disabled"
+```
+
+Leaving `MGS_API_KEYS` empty leaves every write open — the API warns at startup
+and `/health` says so. The compose stack sets a key by default. This is a shared
+secret, not per-operator identity: see
+[`decisions/0005`](docs/decisions/0005-api-keys-guard-writes.md) for what that
+does and does not buy.
+
+**Telemetry does not delete itself.** About 2.3 GB per satellite-year at the
+default cadence, seventy at one frame a second.
+
+```bash
+mgs-retention --days 90 --dry-run     # what would go
+mgs-retention --days 90               # actually go
+docker compose --profile maintenance run --rm retention
+```
+
+Frames an alert cites are evidence and are never deleted, and neither are
+frames the worker has not screened yet. It deletes rather than partitions
+because partitioning by time would force `UNIQUE (satellite_id, seq)` to widen
+and take idempotent ingestion with it —
+[`decisions/0006`](docs/decisions/0006-retention-not-partitioning.md) has the
+error message from PostgreSQL saying so.
+
 ## Tests and CI
 
 ```bash
-make test                        # 61 tests; the integration ones need `make db-up`
+make test                        # 125 tests; the integration ones need `make db-up`
 make lint                        # ruff check + format --check
 ```
 

@@ -50,6 +50,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     p.add_argument("--api-url", default=settings.sim_api_url)
     p.add_argument(
+        "--api-key",
+        default=settings.sim_api_key,
+        help="sent as X-API-Key; required when the station has keys configured",
+    )
+    p.add_argument(
         "--satellite-id",
         default=settings.sim_satellite_id,
         help="defaults to the name in the element set",
@@ -134,8 +139,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 class Downlink:
     """Thin HTTP client for the ingestion API."""
 
-    def __init__(self, base_url: str) -> None:
-        self.client = httpx.Client(base_url=base_url.rstrip("/"), timeout=10.0)
+    def __init__(self, base_url: str, api_key: str = "") -> None:
+        headers = {"X-API-Key": api_key} if api_key else {}
+        self.client = httpx.Client(base_url=base_url.rstrip("/"), timeout=10.0, headers=headers)
 
     def open_pass(self, satellite_id: str, station_id: str, aos_at: datetime) -> int:
         r = self.client.post(
@@ -239,7 +245,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0915 - one linear fl
 
     rng = random.Random(args.seed)
     craft = Spacecraft()
-    link = Downlink(args.api_url)
+    link = Downlink(args.api_url, args.api_key)
 
     try:
         seq = 0 if args.restart_seq else link.latest_seq(satellite_id)

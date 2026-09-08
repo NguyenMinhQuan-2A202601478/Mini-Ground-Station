@@ -290,3 +290,101 @@ def test_the_training_window_never_includes_later_frames(session, settings):
     cut = BASE + timedelta(seconds=10)
     history = training_history(session, "TEST-1", settings, cut)
     assert history and all(row.recorded_at < cut for row in history)
+
+
+# --- hysteresis -----------------------------------------------------------
+#
+# Measured on a day of real telemetry before this existed: ML_OUTLIER reopened
+# eleven times, seven of them within five minutes, the shortest gap being a
+# single 30-second frame. Twelve "episodes" were really a handful of
+# excursions with normal-looking frames sprinkled through them.
+
+
+def _with_hysteresis(settings, seconds: float):
+    return settings.model_copy(update={"alert_clear_after_seconds": seconds})
+
+
+def test_one_normal_frame_does_not_close_an_episode(session, settings):
+    quiet = _with_hysteresis(settings, 10.0)
+    for seq in range(1, 6):
+        send(session, seq, battery_voltage_v=6.5)
+    send(session, 6)  # one frame that happens to look fine
+    for seq in range(7, 12):
+        send(session, seq, battery_voltage_v=6.5)
+    session.commit()
+
+    screen_once(session, quiet)
+    low = alerts(session, "BATTERY_LOW")
+    assert len(low) == 1, "a blip in the middle of an excursion is not the end of it"
+    assert low[0].resolved_at is None
+    assert low[0].clearing_since is None, "the quiet period restarts when it comes back"
+
+
+def test_an_episode_closes_once_the_condition_stays_away(session, settings):
+    quiet = _with_hysteresis(settings, 5.0)
+    for seq in range(1, 6):
+        send(session, seq, battery_voltage_v=6.5)
+    for seq in range(6, 20):
+        send(session, seq)
+    session.commit()
+
+    screen_once(session, quiet)
+    low = alerts(session, "BATTERY_LOW")
+    assert len(low) == 1
+    # It ended when it actually stopped, not when the worker became sure.
+    assert low[0].resolved_at == BASE + timedelta(seconds=6)
+
+
+def test_an_episode_is_marked_as_clearing_before_it_resolves(session, settings):
+    """An operator should see "on its way out", not a stuck alert."""
+    quiet = _with_hysteresis(settings, 60.0)
+    for seq in range(1, 6):
+        send(session, seq, battery_voltage_v=6.5)
+    for seq in range(6, 10):
+        send(session, seq)
+    session.commit()
+
+    screen_once(session, quiet)
+    low = alerts(session, "BATTERY_LOW")[0]
+    assert low.resolved_at is None
+    assert low.clearing_since == BASE + timedelta(seconds=6)
+
+
+def test_hysteresis_survives_a_batch_boundary(session, settings):
+    """The quiet period lives on the alert row, so it outlives the batch."""
+    quiet = _with_hysteresis(settings, 5.0).model_copy(update={"worker_batch_size": 4})
+    for seq in range(1, 6):
+        send(session, seq, battery_voltage_v=6.5)
+    for seq in range(6, 20):
+        send(session, seq)
+    session.commit()
+
+    _drain(session, quiet)
+    low = alerts(session, "BATTERY_LOW")
+    assert len(low) == 1
+    assert low[0].resolved_at == BASE + timedelta(seconds=6)
+
+
+def test_a_long_enough_recovery_really_does_open_a_second_episode(session, settings):
+    """Hysteresis must suppress flapping without hiding a genuine recurrence."""
+    quiet = _with_hysteresis(settings, 5.0)
+    for seq in range(1, 6):
+        send(session, seq, battery_voltage_v=6.5)
+    for seq in range(6, 30):
+        send(session, seq)
+    for seq in range(30, 36):
+        send(session, seq, battery_voltage_v=6.5)
+    session.commit()
+
+    screen_once(session, quiet)
+    assert len(alerts(session, "BATTERY_LOW")) == 2
+
+
+def test_hysteresis_does_not_change_how_episodes_open(session, settings):
+    quiet = _with_hysteresis(settings, 300.0)
+    for seq in range(1, 11):
+        send(session, seq, battery_voltage_v=6.2, temperature_c=95.0)
+    session.commit()
+
+    screen_once(session, quiet)
+    assert {a.rule for a in alerts(session)} == {"BATTERY_LOW", "TEMP_HIGH"}

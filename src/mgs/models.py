@@ -126,6 +126,9 @@ class Telemetry(Base):
         CheckConstraint("lon_deg BETWEEN -180 AND 180", name="ck_telemetry_lon"),
         CheckConstraint(f"mode IN {SPACECRAFT_MODES}", name="ck_telemetry_mode"),
         Index("ix_telemetry_sat_recorded", "satellite_id", recorded_at.desc()),
+        # Retention sweeps by age across every satellite, which the composite
+        # index above cannot serve.
+        Index("ix_telemetry_recorded", recorded_at),
         Index("ix_telemetry_pass", "pass_id"),
         # The worker's queue.
         Index("ix_telemetry_unscreened", "id", postgresql_where=screened_at.is_(None)),
@@ -162,6 +165,10 @@ class Alert(Base):
     )
     acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # When the condition first went quiet. An episode is not resolved the
+    # instant one frame looks normal — it has to stay normal — so this is the
+    # candidate end time, promoted to `resolved_at` once it has held.
+    clearing_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     # Re-running the worker over the same frames must not create duplicates.
     dedupe_key: Mapped[str] = mapped_column(String(200), nullable=False)

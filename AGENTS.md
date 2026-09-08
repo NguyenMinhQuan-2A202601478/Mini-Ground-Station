@@ -82,8 +82,14 @@ Stop and ask before:
   contract, and telemetry is evidence that is never deleted;
 - weakening a uniqueness constraint — `uq_telemetry_sat_seq` and
   `uq_alerts_dedupe` are what make ingestion and alerting safe to retry;
-- changing alert severity thresholds or the episode model in
-  `src/mgs/worker/screener.py` — both decide what a human gets paged for;
+- changing alert severity thresholds, the episode model, or the quiet period in
+  `src/mgs/worker/screener.py` — all three decide what a human gets paged for;
+- removing the API key requirement from a writing endpoint, or adding a writing
+  endpoint without one (`docs/decisions/0005`);
+- widening `uq_telemetry_sat_seq`, including to make the table partitionable:
+  that constraint is what makes ingestion idempotent (`docs/decisions/0006`);
+- letting retention delete a frame an alert cites, or one the worker has not
+  screened;
 - putting two measures with different units on one chart. Three separate charts
   is deliberate: a shared y-axis across volts, degrees and dBm would invent a
   correlation the data does not contain;

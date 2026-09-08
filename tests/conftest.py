@@ -18,7 +18,10 @@ TEST_DATABASE_URL = os.environ.get(
 
 @pytest.fixture(scope="session")
 def settings() -> Settings:
-    return Settings(database_url=TEST_DATABASE_URL, enable_ml=False)
+    """Deliberately no hysteresis: tests that are about the episode state
+    machine should not also be about the quiet period. The hysteresis tests set
+    their own value."""
+    return Settings(database_url=TEST_DATABASE_URL, enable_ml=False, alert_clear_after_seconds=0.0)
 
 
 @pytest.fixture(scope="session")

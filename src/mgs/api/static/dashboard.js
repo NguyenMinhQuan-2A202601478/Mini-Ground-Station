@@ -90,6 +90,50 @@ async function get(path) {
   return res.json();
 }
 
+/* The station key. Reading is open; acknowledging an alert is a write, so it
+ * carries the key. This is a shared secret typed by whoever is on console — it
+ * proves you are allowed to touch the station, not which operator you are. */
+function stationKey() {
+  try {
+    return localStorage.getItem("mgs-api-key") || "";
+  } catch {
+    return "";
+  }
+}
+
+function rememberStationKey(key) {
+  try {
+    if (key) localStorage.setItem("mgs-api-key", key);
+    else localStorage.removeItem("mgs-api-key");
+  } catch {
+    /* private browsing: the key just will not persist */
+  }
+}
+
+async function post(path, body) {
+  const send = (key) =>
+    fetch(API + path, {
+      method: "POST",
+      headers: key
+        ? { "content-type": "application/json", "X-API-Key": key }
+        : { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+  let res = await send(stationKey());
+  if (res.status === 401) {
+    const key = window.prompt(
+      "This station requires an API key for operator actions.\nPaste it to continue:",
+      "",
+    );
+    if (!key) return res;
+    rememberStationKey(key);
+    res = await send(key);
+    if (res.status === 401) rememberStationKey("");
+  }
+  return res;
+}
+
 const clock = (iso) =>
   iso ? new Date(iso).toLocaleTimeString([], { hour12: false }) : "—";
 
@@ -670,20 +714,30 @@ function renderAlerts() {
     head.appendChild(el("span", `sev sev-${a.severity}`, a.severity));
     body.appendChild(head);
     body.appendChild(el("div", "msg", a.message));
+    const marks = [];
+    if (a.clearing_since) marks.push("clearing");
+    if (a.acknowledged_at) marks.push("acknowledged");
     body.appendChild(
-      el("div", "when", `${clock(a.detected_at)} · ${ago(a.detected_at)}` +
-        (a.acknowledged_at ? " · acknowledged" : "")),
+      el(
+        "div",
+        "when",
+        `${clock(a.detected_at)} · ${ago(a.detected_at)}` +
+          (marks.length ? ` · ${marks.join(" · ")}` : ""),
+      ),
     );
     row.appendChild(body);
 
     const ack = el("button", null, a.acknowledged_at ? "Resolve" : "Ack");
     ack.addEventListener("click", async () => {
       ack.disabled = true;
-      await fetch(`${API}/alerts/${a.id}/ack`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ resolve: Boolean(a.acknowledged_at) }),
+      const res = await post(`/alerts/${a.id}/ack`, {
+        resolve: Boolean(a.acknowledged_at),
       });
+      if (!res.ok) {
+        ack.disabled = false;
+        ack.textContent = res.status === 401 ? "Key needed" : "Failed";
+        return;
+      }
       load();
     });
     row.appendChild(ack);

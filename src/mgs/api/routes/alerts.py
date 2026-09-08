@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from mgs.api.security import require_api_key
 from mgs.db import get_session
 from mgs.models import Alert
 from mgs.schemas import AlertAck, AlertOut
@@ -35,7 +36,7 @@ def list_alerts(
     return list(session.scalars(stmt))
 
 
-@router.post("/{alert_id}/ack", response_model=AlertOut)
+@router.post("/{alert_id}/ack", response_model=AlertOut, dependencies=[Depends(require_api_key)])
 def ack_alert(alert_id: int, body: AlertAck, session: Session = Depends(get_session)) -> Alert:
     """Operator acknowledges an alert, and optionally marks it resolved."""
     row = session.get(Alert, alert_id)

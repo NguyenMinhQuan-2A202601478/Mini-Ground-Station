@@ -9,6 +9,11 @@ x-mgs: &mgs
   environment: &mgs-env
     MGS_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-mgs}:${POSTGRES_PASSWORD:-mgs}@db:5432/${POSTGRES_DB:-mgs}
     MGS_LOG_LEVEL: ${MGS_LOG_LEVEL:-INFO}
+    # The packaged stack is authenticated by default. `dev-station-key` is a
+    # placeholder that is public in this file — set MGS_API_KEYS in your .env
+    # before this reaches anything you care about.
+    MGS_API_KEYS: ${MGS_API_KEYS:-dev-station-key}
+    MGS_RETENTION_DAYS: ${MGS_RETENTION_DAYS:-0}
   restart: unless-stopped
 
 services:
@@ -74,9 +79,24 @@ services:
     environment:
       <<: *mgs-env
       MGS_SIM_API_URL: http://api:8000
+      MGS_SIM_API_KEY: ${MGS_API_KEYS:-dev-station-key}
     depends_on:
       api:
         condition: service_healthy
+
+  # Opt-in, and meant for a schedule rather than a daemon: apply the retention
+  # policy once and exit. `docker compose --profile maintenance run --rm retention`
+  retention:
+    <<: *mgs
+    container_name: mgs-retention
+    profiles: ["maintenance"]
+    command: ["mgs-retention"]
+    restart: "no"
+    healthcheck:
+      disable: true
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
 
 volumes:
   mgs-pgdata:

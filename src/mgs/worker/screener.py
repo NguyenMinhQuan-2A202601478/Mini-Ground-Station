@@ -212,7 +212,7 @@ def screen_once(
                 else:
                     point_findings.append(finding)
 
-            opened += _reconcile_episodes(session, frame, active, episodes)
+            opened += _reconcile_episodes(session, frame, active, episodes, settings)
 
     created = _insert_point_alerts(session, point_findings) + opened
 
@@ -267,6 +267,7 @@ def _open_episode(session: Session, finding: Finding, rule: str) -> tuple[Alert,
 
     existing = session.scalars(select(Alert).where(Alert.dedupe_key == key)).one()
     existing.resolved_at = None
+    existing.clearing_since = None
     session.flush()
     return existing, False
 
@@ -276,6 +277,7 @@ def _reconcile_episodes(
     frame: Telemetry,
     active: dict[str, Finding],
     episodes: dict[tuple[str, str], Alert],
+    settings: Settings,
 ) -> int:
     """Open, escalate, or resolve episodic alerts in light of one frame."""
     opened = 0
@@ -300,12 +302,33 @@ def _reconcile_episodes(
             session.flush()
             log.warning("[%s] %s escalated to %s", frame.satellite_id, rule, finding.severity)
 
+    hysteresis = timedelta(seconds=settings.alert_clear_after_seconds)
     for (satellite_id, rule), alert in list(episodes.items()):
-        if satellite_id != frame.satellite_id or rule in active:
+        if satellite_id != frame.satellite_id:
             continue
-        alert.resolved_at = frame.recorded_at
-        session.flush()
-        del episodes[(satellite_id, rule)]
-        log.info("[%s] %s cleared at seq %d", satellite_id, rule, frame.seq)
+        if rule in active:
+            # The condition came back before the quiet period was up: this is
+            # the same episode, not a new one.
+            if alert.clearing_since is not None:
+                alert.clearing_since = None
+                session.flush()
+            continue
+
+        if alert.clearing_since is None:
+            alert.clearing_since = frame.recorded_at
+            session.flush()
+
+        if frame.recorded_at - alert.clearing_since >= hysteresis:
+            # Resolved *when it actually stopped*, not when we became sure.
+            alert.resolved_at = alert.clearing_since
+            session.flush()
+            del episodes[(satellite_id, rule)]
+            log.info(
+                "[%s] %s cleared at %s, confirmed at seq %d",
+                satellite_id,
+                rule,
+                alert.clearing_since.isoformat(timespec="seconds"),
+                frame.seq,
+            )
 
     return opened

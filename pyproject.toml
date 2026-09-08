@@ -35,6 +35,7 @@ dev = [
 mgs-api = "mgs.api.main:run"
 mgs-worker = "mgs.worker.__main__:main"
 mgs-sim = "mgs.simulator.__main__:main"
+mgs-retention = "mgs.retention_cli:main"
 
 [build-system]
 requires = ["hatchling"]

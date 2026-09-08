@@ -121,6 +121,16 @@ jobs:
           [ "$alerts" -gt 0 ] || { echo "::error::the worker raised nothing at all"; exit 1; }
           [ "$unscreened" = "0" ] || { echo "::error::the worker left frames unscreened"; exit 1; }
 
+      - name: Writes are refused without a key, reads are not
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+            -H 'content-type: application/json' -d '{}' \
+            http://localhost:8000/api/v1/passes)
+          echo "unauthenticated POST /passes -> $code"
+          [ "$code" = "401" ] || { echo "::error::a write endpoint is open"; exit 1; }
+          [ "$(curl -s http://localhost:8000/health | grep -o '\"auth\":\"[a-z]*\"')" \
+            = '"auth":"enabled"' ] || { echo "::error::the stack is running unauthenticated"; exit 1; }
+
       - name: The API and the dashboard answer
         run: |
           for path in / /health /api/v1/summary /api/v1/passes /api/v1/alerts \
@@ -152,6 +162,34 @@ jobs:
           [ "$first" = "$second" ] || { echo "::error::screening is not reproducible"; exit 1; }
           [ -n "$first" ] || { echo "::error::screening raised nothing at all"; exit 1; }
           docker compose start worker
+
+      - name: Retention refuses to run unconfigured, and a dry run deletes nothing
+        run: |
+          # No policy set: it must refuse rather than pick a default and start
+          # deleting a mission's telemetry.
+          if docker compose --profile maintenance run --rm retention mgs-retention; then
+            echo "::error::retention ran without a policy"; exit 1
+          fi
+          before=$(docker compose exec -T db psql -U mgs -d mgs -tAc "SELECT count(*) FROM telemetry")
+          docker compose --profile maintenance run --rm retention \
+            mgs-retention --days 1 --dry-run 2>&1 | tail -1
+          after=$(docker compose exec -T db psql -U mgs -d mgs -tAc "SELECT count(*) FROM telemetry")
+          echo "frames: $before before the dry run, $after after"
+          [ "$before" = "$after" ] || { echo "::error::a dry run deleted something"; exit 1; }
+
+          # Sweep almost everything: what survives must be exactly the frames an
+          # alert cites, and no alert may be left pointing at nothing.
+          docker compose --profile maintenance run --rm retention \
+            mgs-retention --days 0.001 2>&1 | tail -1
+          read -r left evidence orphaned <<<"$(docker compose exec -T db psql -U mgs -d mgs -tAF' ' -c \
+            "SELECT (SELECT count(*) FROM telemetry),
+                    (SELECT count(*) FROM telemetry t
+                     WHERE EXISTS (SELECT 1 FROM alerts a WHERE a.telemetry_id = t.id)),
+                    (SELECT count(*) FROM alerts a WHERE a.telemetry_id IS NOT NULL
+                     AND NOT EXISTS (SELECT 1 FROM telemetry t WHERE t.id = a.telemetry_id))")"
+          echo "frames left=$left, of which evidence=$evidence, orphaned alerts=$orphaned"
+          [ "$left" = "$evidence" ] || { echo "::error::retention kept frames it should have swept"; exit 1; }
+          [ "$orphaned" = "0" ] || { echo "::error::retention deleted a frame an alert cites"; exit 1; }
 
       - name: Logs
         if: failure()
