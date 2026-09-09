@@ -29,6 +29,22 @@ batch, hai worker cùng cắt một luồng dữ liệu, `--once` bỏ sót 1.61
 cửa sổ huấn luyện neo nhầm vào đồng hồ hệ thống khiến việc replay dữ liệu cũ
 im lặng không chấm gì cả. Chi tiết nằm trong lịch sử commit.
 
+### Dự án này được viết thế nào
+
+Viết trong một phiên làm việc với [Claude Code](https://claude.com/claude-code).
+Bộ công cụ agent dùng trong phiên đó được giữ lại trong repo chứ không dọn đi:
+`AGENTS.md` và `.agents/skills/` là giao thức làm việc của
+[repository-harness](https://github.com/hoangnb24/repository-harness),
+`.claude/skills/graphify/` là skill dựng đồ thị tri thức của
+[graphify](https://github.com/Graphify-Labs/graphify) để tra cứu code thay cho
+grep. Chi tiết trong [`docs/agents.md`](docs/agents.md).
+
+Thứ đáng đọc không phải là công cụ, mà là **những gì được ghi lại**: sáu bản
+quyết định trong `docs/decisions/` nói rõ phương án nào bị loại và vì sao, kèm
+số đo trước và sau. Trong đó có một quyết định mà phương án ban đầu bị chính
+PostgreSQL bác bỏ, và thông báo lỗi của nó được trích nguyên văn thay cho lời
+giải thích.
+
 *Phần còn lại của README bằng tiếng Anh.*
 
 ---
@@ -266,7 +282,20 @@ Dependencies are pinned in `uv.lock`, and both CI and the image install with
 
 ## Agent tooling
 
-This repository carries [repository-harness](https://github.com/hoangnb24/repository-harness)
-(`AGENTS.md`, `docs/WORKFLOW.md`, `.agents/skills/`) and a project-scoped
-[graphify](https://github.com/Graphify-Labs/graphify) skill. See
-[`docs/agents.md`](docs/agents.md).
+This project was written in a working session with
+[Claude Code](https://claude.com/claude-code), and the tooling from that
+session is kept in the repository rather than swept out of it:
+[repository-harness](https://github.com/hoangnb24/repository-harness)
+(`AGENTS.md`, `docs/WORKFLOW.md`, `.agents/skills/`) supplies the repository
+protocol, and a project-scoped
+[graphify](https://github.com/Graphify-Labs/graphify) skill builds a knowledge
+graph to query instead of grepping. See [`docs/agents.md`](docs/agents.md).
+
+The tooling is not the interesting part. The record is: six decision documents
+under `docs/decisions/` say which alternative was rejected and why, with
+measurements either side of the change, and the commit history says which bugs
+the container checks found before anyone else could.
+
+## License
+
+MIT — see [`LICENSE`](LICENSE).
