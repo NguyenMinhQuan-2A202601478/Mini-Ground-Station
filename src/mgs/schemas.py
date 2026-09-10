@@ -167,12 +167,6 @@ class AlertCounts(BaseModel):
         return self.critical + self.warning + self.info
 
 
-class Satellite(BaseModel):
-    satellite_id: str
-    frame_count: int
-    last_contact_at: datetime | None
-
-
 class Limits(BaseModel):
     """The operating limits the worker actually screens against.
 
@@ -185,6 +179,45 @@ class Limits(BaseModel):
     battery_critical_v: float
     temp_max_c: float
     temp_min_c: float
+
+
+class Satellite(BaseModel):
+    """A tracked spacecraft, with the operational counters beside it."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    satellite_id: str
+    name: str | None = None
+    catalog_number: int | None = None
+    operator: str | None = None
+    first_seen_at: datetime | None = None
+    # Effective limits: this spacecraft's overrides where set, the station's
+    # defaults elsewhere.
+    limits: Limits | None = None
+    frame_count: int = 0
+    pass_count: int = 0
+    open_alerts: int = 0
+    last_contact_at: datetime | None = None
+
+
+class SatelliteUpdate(BaseModel):
+    """Everything an operator may change about a spacecraft.
+
+    Every field is optional and `None` means "leave it alone", so a caller can
+    set one limit without having to restate the rest.
+    """
+
+    name: str | None = Field(default=None, max_length=128)
+    catalog_number: int | None = Field(default=None, gt=0)
+    operator: str | None = Field(default=None, max_length=128)
+    battery_min_v: float | None = None
+    battery_critical_v: float | None = None
+    temp_max_c: float | None = None
+    temp_min_c: float | None = None
+    # Naming a field here resets it to the station default.
+    clear: list[Literal["battery_min_v", "battery_critical_v", "temp_max_c", "temp_min_c"]] = Field(
+        default_factory=list
+    )
 
 
 class Summary(BaseModel):

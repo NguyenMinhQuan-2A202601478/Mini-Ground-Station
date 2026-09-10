@@ -11,7 +11,37 @@ Signal). During a pass the spacecraft downlinks **telemetry** frames. A
 background worker screens those frames and raises **alerts** when a value
 breaks a rule or looks statistically anomalous.
 
-Three tables, one per noun: `passes`, `telemetry`, `alerts`.
+Four tables: `satellites` for the spacecraft the station tracks, and one per
+noun for the operational record — `passes`, `telemetry`, `alerts`.
+
+## Table: `satellites`
+
+One row per spacecraft this station tracks. Added after the other three (see
+"Decisions worth knowing" below), and the reason it exists is the limits.
+
+| Column | Type | Notes |
+|---|---|---|
+| `satellite_id` | text PK | the identifier the other three tables already carried |
+| `name` | text NULL | display name; defaults to the id on registration |
+| `catalog_number` | int NULL | NORAD number — what the TLE is keyed by |
+| `operator` | text NULL | |
+| `battery_min_v` | double NULL | **override**; NULL = the station default |
+| `battery_critical_v` | double NULL | override |
+| `temp_max_c` | double NULL | override |
+| `temp_min_c` | double NULL | override |
+| `first_seen_at` | timestamptz NOT NULL DEFAULT now() | earliest evidence of contact |
+
+- `CHECK (battery_critical_v <= battery_min_v)` and the matching temperature
+  check, both skipped when either side is NULL. An inverted pair is a rule no
+  telemetry can satisfy, and it should be impossible to store rather than
+  merely unlikely.
+- **Rows register themselves.** A frame from an unknown spacecraft inserts one
+  rather than being rejected: telemetry that has already been received is not
+  something to discard over a missing configuration row. A pass opens itself
+  on first contact for the same reason.
+- **A NULL override is not "no limit"** — it means the station default from
+  `Settings`. So a row nobody has edited screens exactly as it did before this
+  table existed.
 
 ## Table: `passes`
 
@@ -101,9 +131,14 @@ One row per detected problem.
 ## Relationships
 
 ```
-passes 1 ──< telemetry 1 ──< alerts
-   └──────────────< alerts (pass-level)
+satellites 1 ──< passes 1 ──< telemetry 1 ──< alerts
+      │                └──────────────< alerts (pass-level)
+      ├──< telemetry
+      └──< alerts
 ```
+
+All three operational tables carry `satellite_id` as a foreign key *and* keep
+it denormalised — the worker still never joins to screen a frame.
 
 `ON DELETE` is `RESTRICT` everywhere: telemetry is evidence and is not deleted
 behind an alert that cites it.
@@ -112,10 +147,13 @@ behind an alert that cites it.
 
 1. **Timestamps are all `timestamptz`, stored UTC.** Space work crosses
    timezones; naive datetimes are a bug factory.
-2. **`satellite_id` is denormalised onto every table.** There is no
-   `satellites` table yet because nothing needs one; when spacecraft metadata
-   (TLE, operator, commissioning date) appears, it becomes a fourth table and
-   these columns become FKs.
+2. **`satellite_id` is denormalised onto every table, and is now also a
+   foreign key.** It began as bare text with no table behind it, because
+   nothing needed one. What eventually needed one was per-spacecraft operating
+   limits — an aged battery has a different floor from a new one, and that is
+   a property of the satellite, not of the station. The column stayed exactly
+   where it was; it merely gained something to point at. See
+   `docs/decisions/0007`.
 3. **Screening state is a column, not a table.** See `screened_at` above.
 4. **Idempotency is enforced by the database, not by application logic.** Both
    ingestion and alerting are safe to retry.

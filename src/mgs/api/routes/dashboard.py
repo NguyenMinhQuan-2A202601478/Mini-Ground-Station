@@ -6,18 +6,22 @@ from datetime import datetime
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session
 
+from mgs.api.security import require_api_key
 from mgs.config import Settings, get_settings
 from mgs.db import get_session
+from mgs.limits import resolve as resolve_limits
+from mgs.limits import station_defaults
 from mgs.models import Alert, Pass, Telemetry
+from mgs.models import Satellite as SatelliteRow
 from mgs.schemas import (
     AlertCounts,
-    Limits,
     Satellite,
+    SatelliteUpdate,
     SeriesPoint,
     Summary,
     TelemetrySeries,
@@ -31,20 +35,110 @@ STATIC = Path(__file__).resolve().parent.parent / "static"
 
 
 @router.get("/satellites", response_model=list[Satellite])
-def list_satellites(session: Session = Depends(get_session)) -> list[Satellite]:
-    rows = session.execute(
-        select(
-            Telemetry.satellite_id,
-            func.count().label("frames"),
-            func.max(Telemetry.received_at).label("last_contact"),
-        )
-        .group_by(Telemetry.satellite_id)
-        .order_by(Telemetry.satellite_id)
-    ).all()
+def list_satellites(
+    session: Session = Depends(get_session),
+    settings: Settings = Depends(get_settings),
+) -> list[Satellite]:
+    """Every spacecraft the station tracks, with its counters and its limits."""
+    frames = dict(
+        session.execute(
+            select(
+                Telemetry.satellite_id,
+                func.count().label("frames"),
+            ).group_by(Telemetry.satellite_id)
+        ).all()
+    )
+    contact = dict(
+        session.execute(
+            select(Telemetry.satellite_id, func.max(Telemetry.received_at)).group_by(
+                Telemetry.satellite_id
+            )
+        ).all()
+    )
+    passes = dict(
+        session.execute(select(Pass.satellite_id, func.count()).group_by(Pass.satellite_id)).all()
+    )
+    open_alerts = dict(
+        session.execute(
+            select(Alert.satellite_id, func.count())
+            .where(Alert.resolved_at.is_(None))
+            .group_by(Alert.satellite_id)
+        ).all()
+    )
+
+    rows = session.scalars(select(SatelliteRow).order_by(SatelliteRow.satellite_id)).all()
     return [
-        Satellite(satellite_id=r.satellite_id, frame_count=r.frames, last_contact_at=r.last_contact)
-        for r in rows
+        Satellite(
+            satellite_id=row.satellite_id,
+            name=row.name,
+            catalog_number=row.catalog_number,
+            operator=row.operator,
+            first_seen_at=row.first_seen_at,
+            limits=resolve_limits(row, settings),
+            frame_count=frames.get(row.satellite_id, 0),
+            pass_count=passes.get(row.satellite_id, 0),
+            open_alerts=open_alerts.get(row.satellite_id, 0),
+            last_contact_at=contact.get(row.satellite_id),
+        )
+        for row in rows
     ]
+
+
+@router.put(
+    "/satellites/{satellite_id}",
+    response_model=Satellite,
+    dependencies=[Depends(require_api_key)],
+)
+def update_satellite(
+    satellite_id: str,
+    body: SatelliteUpdate,
+    session: Session = Depends(get_session),
+    settings: Settings = Depends(get_settings),
+) -> Satellite:
+    """Edit a spacecraft's identity or its limits.
+
+    Changing a limit changes what someone gets paged for, so this is a write
+    and carries the station key like every other one.
+    """
+    row = session.get(SatelliteRow, satellite_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="unknown satellite")
+
+    for field, value in body.model_dump(exclude={"clear"}, exclude_none=True).items():
+        setattr(row, field, value)
+    for field in body.clear:
+        setattr(row, field, None)
+
+    # Before the flush: the CHECK constraint would otherwise fire first and turn
+    # a plain mistake into an IntegrityError. It stays as the backstop.
+    _validate_limits(row)
+    session.flush()
+    return Satellite(
+        satellite_id=row.satellite_id,
+        name=row.name,
+        catalog_number=row.catalog_number,
+        operator=row.operator,
+        first_seen_at=row.first_seen_at,
+        limits=resolve_limits(row, settings),
+    )
+
+
+def _validate_limits(row: SatelliteRow) -> None:
+    """Catch an inverted pair before it becomes a rule nobody can satisfy."""
+    if (
+        row.battery_critical_v is not None
+        and row.battery_min_v is not None
+        and row.battery_critical_v > row.battery_min_v
+    ):
+        raise HTTPException(
+            status_code=422, detail="battery_critical_v must be at or below battery_min_v"
+        )
+    if (
+        row.temp_min_c is not None
+        and row.temp_max_c is not None
+        and row.temp_min_c > row.temp_max_c
+    ):
+        raise HTTPException(status_code=422, detail="temp_min_c must be at or below temp_max_c")
 
 
 @router.get("/summary", response_model=Summary)
@@ -100,11 +194,12 @@ def summary(
         current_pass=current,
         last_pass=last,
         open_alerts=AlertCounts(**{severity: count for severity, count in severities}),
-        limits=Limits(
-            battery_min_v=settings.battery_min_v,
-            battery_critical_v=settings.battery_critical_v,
-            temp_max_c=settings.temp_max_c,
-            temp_min_c=settings.temp_min_c,
+        # The limits the worker screens *this* satellite against. Without a
+        # satellite in scope there is nothing to override, so the station's own.
+        limits=(
+            resolve_limits(session.get(SatelliteRow, satellite_id), settings)
+            if satellite_id
+            else station_defaults(settings)
         ),
     )
 

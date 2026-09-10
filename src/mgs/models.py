@@ -41,13 +41,67 @@ SEVERITIES = ("info", "warning", "critical")
 SPACECRAFT_MODES = ("NOMINAL", "SAFE", "PAYLOAD")
 
 
+class Satellite(Base):
+    """A spacecraft this station tracks.
+
+    The three operational tables carry `satellite_id` as text and always did;
+    this table gives that identifier somewhere to point, and somewhere to hang
+    the things that differ between spacecraft. The most important of those is
+    the operating limits: a battery that has aged is not a battery that is
+    failing, and telling them apart is a per-satellite judgement, not a station
+    one.
+
+    Rows appear on their own. A frame from an unknown spacecraft registers it
+    rather than being rejected: telemetry that has already been received is not
+    something to throw away over a missing configuration row.
+    """
+
+    __tablename__ = "satellites"
+
+    satellite_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str | None] = mapped_column(String(128))
+    catalog_number: Mapped[int | None] = mapped_column(Integer)
+    operator: Mapped[str | None] = mapped_column(String(128))
+
+    # Limit overrides. NULL means "use the station default from Settings", so a
+    # row that nobody has edited behaves exactly as before this table existed.
+    battery_min_v: Mapped[float | None] = mapped_column(Float)
+    battery_critical_v: Mapped[float | None] = mapped_column(Float)
+    temp_max_c: Mapped[float | None] = mapped_column(Float)
+    temp_min_c: Mapped[float | None] = mapped_column(Float)
+
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "catalog_number IS NULL OR catalog_number > 0", name="ck_satellites_catalog"
+        ),
+        CheckConstraint(
+            "battery_critical_v IS NULL OR battery_min_v IS NULL "
+            "OR battery_critical_v <= battery_min_v",
+            name="ck_satellites_battery_order",
+        ),
+        CheckConstraint(
+            "temp_min_c IS NULL OR temp_max_c IS NULL OR temp_min_c <= temp_max_c",
+            name="ck_satellites_temp_order",
+        ),
+    )
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"<Satellite {self.satellite_id}>"
+
+
 class Pass(Base):
     """A contact window between one satellite and one ground station."""
 
     __tablename__ = "passes"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    satellite_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    satellite_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("satellites.satellite_id", ondelete="RESTRICT"), nullable=False
+    )
     ground_station_id: Mapped[str] = mapped_column(String(64), nullable=False)
 
     aos_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -92,7 +146,9 @@ class Telemetry(Base):
     pass_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("passes.id", ondelete="RESTRICT")
     )
-    satellite_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    satellite_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("satellites.satellite_id", ondelete="RESTRICT"), nullable=False
+    )
     seq: Mapped[int] = mapped_column(Integer, nullable=False)
 
     recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -150,7 +206,9 @@ class Alert(Base):
     pass_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("passes.id", ondelete="RESTRICT")
     )
-    satellite_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    satellite_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("satellites.satellite_id", ondelete="RESTRICT"), nullable=False
+    )
 
     rule: Mapped[str] = mapped_column(String(32), nullable=False)
     severity: Mapped[str] = mapped_column(String(16), nullable=False)

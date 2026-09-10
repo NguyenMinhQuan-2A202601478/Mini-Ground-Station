@@ -17,6 +17,7 @@ from mgs.api.main import app
 from mgs.api.security import HEADER
 from mgs.config import Settings, get_settings
 from mgs.db import get_session
+from mgs.ingest import ensure_satellite
 from mgs.models import Alert
 
 pytestmark = pytest.mark.integration
@@ -111,6 +112,9 @@ def test_opening_a_pass_needs_a_key(locked_station):
 
 def test_silencing_an_alert_needs_a_key(session, locked_station):
     """The write that matters most: an open alert nobody can see is worse than none."""
+    # An alert always follows telemetry, so the spacecraft is already
+    # registered by the time one exists. The foreign key says so too.
+    ensure_satellite(session, "TEST-1")
     session.add(
         Alert(
             satellite_id="TEST-1",

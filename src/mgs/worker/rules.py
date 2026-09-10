@@ -12,6 +12,7 @@ from datetime import datetime
 
 from mgs.config import Settings
 from mgs.models import Telemetry
+from mgs.schemas import Limits
 
 
 @dataclass(frozen=True)
@@ -39,8 +40,12 @@ class Finding:
         return f"{self.satellite_id}:{self.rule}:{anchor}"
 
 
-def evaluate_frame(frame: Telemetry, settings: Settings) -> list[Finding]:
-    """Apply every threshold rule to one frame."""
+def evaluate_frame(frame: Telemetry, limits: Limits) -> list[Finding]:
+    """Apply every threshold rule to one frame.
+
+    `limits` are this spacecraft's, resolved from its own overrides falling
+    back to the station defaults — see `mgs.limits`.
+    """
     findings: list[Finding] = []
 
     def add(rule: str, severity: str, metric: str, value: float, threshold: float, msg: str):
@@ -60,44 +65,44 @@ def evaluate_frame(frame: Telemetry, settings: Settings) -> list[Finding]:
         )
 
     v = frame.battery_voltage_v
-    if v <= settings.battery_critical_v:
+    if v <= limits.battery_critical_v:
         add(
             "BATTERY_LOW",
             "critical",
             "battery_voltage_v",
             v,
-            settings.battery_critical_v,
+            limits.battery_critical_v,
             f"Battery at {v:.2f} V, at or below the critical floor of "
-            f"{settings.battery_critical_v:.2f} V — the spacecraft is at risk of a brownout.",
+            f"{limits.battery_critical_v:.2f} V — the spacecraft is at risk of a brownout.",
         )
-    elif v < settings.battery_min_v:
+    elif v < limits.battery_min_v:
         add(
             "BATTERY_LOW",
             "warning",
             "battery_voltage_v",
             v,
-            settings.battery_min_v,
-            f"Battery at {v:.2f} V, below the nominal minimum of {settings.battery_min_v:.2f} V.",
+            limits.battery_min_v,
+            f"Battery at {v:.2f} V, below the nominal minimum of {limits.battery_min_v:.2f} V.",
         )
 
     t = frame.temperature_c
-    if t > settings.temp_max_c:
+    if t > limits.temp_max_c:
         add(
             "TEMP_HIGH",
-            "critical" if t > settings.temp_max_c + 15 else "warning",
+            "critical" if t > limits.temp_max_c + 15 else "warning",
             "temperature_c",
             t,
-            settings.temp_max_c,
-            f"Temperature {t:.1f} °C exceeds the {settings.temp_max_c:.1f} °C limit.",
+            limits.temp_max_c,
+            f"Temperature {t:.1f} °C exceeds the {limits.temp_max_c:.1f} °C limit.",
         )
-    elif t < settings.temp_min_c:
+    elif t < limits.temp_min_c:
         add(
             "TEMP_LOW",
-            "critical" if t < settings.temp_min_c - 15 else "warning",
+            "critical" if t < limits.temp_min_c - 15 else "warning",
             "temperature_c",
             t,
-            settings.temp_min_c,
-            f"Temperature {t:.1f} °C is below the {settings.temp_min_c:.1f} °C limit.",
+            limits.temp_min_c,
+            f"Temperature {t:.1f} °C is below the {limits.temp_min_c:.1f} °C limit.",
         )
 
     if frame.mode == "SAFE":

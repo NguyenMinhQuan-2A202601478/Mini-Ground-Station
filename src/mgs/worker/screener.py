@@ -22,7 +22,8 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from mgs.config import Settings
-from mgs.models import Alert, Telemetry
+from mgs.limits import resolve as resolve_limits
+from mgs.models import Alert, Satellite, Telemetry
 from mgs.worker.detector import AnomalyDetector
 from mgs.worker.rules import Finding, evaluate_frame, evaluate_gap
 
@@ -189,13 +190,15 @@ def screen_once(
         satellite_frames.sort(key=lambda f: f.seq)
         anchor = min(frame.recorded_at for frame in satellite_frames)
 
+        limits = resolve_limits(session.get(Satellite, satellite_id), settings)
+
         detector = AnomalyDetector(satellite_id, settings)
         detector.fit(training_history(session, satellite_id, settings, anchor))
 
         prev = previous_seq(session, satellite_id, satellite_frames[0].seq)
 
         for frame in satellite_frames:
-            findings = evaluate_frame(frame, settings)
+            findings = evaluate_frame(frame, limits)
 
             gap = evaluate_gap(frame, prev, settings)
             if gap:

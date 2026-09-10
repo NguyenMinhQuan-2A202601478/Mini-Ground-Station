@@ -12,12 +12,27 @@ from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
-from mgs.models import Pass, Telemetry
+from mgs.models import Pass, Satellite, Telemetry
 from mgs.schemas import IngestResult, TelemetryIn
 
 
 def utcnow() -> datetime:
     return datetime.now(UTC)
+
+
+def ensure_satellite(session: Session, satellite_id: str) -> None:
+    """Register a spacecraft the first time the station hears from it.
+
+    The alternative — rejecting telemetry from a satellite nobody configured —
+    would throw away data that has already been received, over a missing
+    configuration row. A pass opens itself on first contact for the same
+    reason; this is the same rule one level up.
+    """
+    session.execute(
+        insert(Satellite)
+        .values(satellite_id=satellite_id, name=satellite_id)
+        .on_conflict_do_nothing(index_elements=["satellite_id"])
+    )
 
 
 def open_pass(
@@ -37,6 +52,7 @@ def open_pass(
     if existing is not None:
         return existing
 
+    ensure_satellite(session, satellite_id)
     row = Pass(
         satellite_id=satellite_id,
         ground_station_id=ground_station_id,
@@ -73,6 +89,8 @@ def close_pass(
 
 def ingest_frame(session: Session, frame: TelemetryIn) -> IngestResult:
     """Persist one frame. Safe to call twice with the same (satellite_id, seq)."""
+    ensure_satellite(session, frame.satellite_id)
+
     pass_id = frame.pass_id
     if pass_id is None:
         existing_pass = current_pass(session, frame.satellite_id)

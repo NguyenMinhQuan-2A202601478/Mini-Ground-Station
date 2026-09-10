@@ -48,5 +48,7 @@ Tradeoffs:
 
 ## Follow-Up
 
-- Revisit when a second spacecraft with different limits appears — see
-  alternative 3.
+- ~~Revisit when a second spacecraft with different limits appears — see
+  alternative 3.~~ Done: [`0007`](0007-per-satellite-limits.md) adds the
+  `satellites` table with nullable limit overrides. `/summary` still reports
+  the limits the worker screens against; it now resolves them per spacecraft.

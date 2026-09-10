@@ -32,14 +32,42 @@ def send(session, seq: int, **overrides) -> None:
     ingest_frame(session, TelemetryIn(**{**payload, **overrides}))
 
 
-def test_satellites_are_listed_with_their_frame_counts(session):
+def test_satellites_are_listed_with_their_frame_counts(session, settings):
     for seq in range(1, 6):
         send(session, seq)
     send(session, 99, satellite_id="TEST-2", auto_open_pass=False)
     session.commit()
 
-    rows = list_satellites(session)
+    rows = list_satellites(session, settings)
     assert [(r.satellite_id, r.frame_count) for r in rows] == [("TEST-1", 5), ("TEST-2", 1)]
+    # One had a pass opened for it, the other was an out-of-pass beacon.
+    assert [(r.satellite_id, r.pass_count) for r in rows] == [("TEST-1", 1), ("TEST-2", 0)]
+
+
+def test_a_satellite_registers_itself_on_first_contact(session, settings):
+    """Telemetry from an unconfigured spacecraft is recorded, not rejected."""
+    from mgs.models import Satellite as SatelliteRow
+
+    assert session.get(SatelliteRow, "TEST-1") is None
+    send(session, 1)
+    session.flush()
+
+    row = session.get(SatelliteRow, "TEST-1")
+    assert row is not None
+    assert row.name == "TEST-1"
+    assert all(
+        getattr(row, field) is None
+        for field in ("battery_min_v", "battery_critical_v", "temp_max_c", "temp_min_c")
+    ), "a freshly registered satellite overrides nothing"
+
+
+def test_a_satellite_with_no_overrides_reports_the_station_limits(session, settings):
+    send(session, 1)
+    session.commit()
+
+    reported = list_satellites(session, settings)[0].limits
+    assert reported.battery_min_v == settings.battery_min_v
+    assert reported.temp_max_c == settings.temp_max_c
 
 
 def test_summary_of_an_empty_database_is_still_answerable(session, settings):

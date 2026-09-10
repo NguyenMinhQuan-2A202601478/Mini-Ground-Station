@@ -174,7 +174,7 @@ mgs-sim --tle-file ./mysat.tle          # your own
 mgs-sim --station-lat 10.82 --station-lon 106.63 --station-id SAIGON-GS
 ```
 
-## The three tables
+## The four tables
 
 - **`passes`** — one contact window, AOS to LOS. A partial unique index makes
   "at most one open pass per satellite" a database guarantee, so attaching a
@@ -184,6 +184,10 @@ mgs-sim --station-lat 10.82 --station-lon 106.63 --station-id SAIGON-GS
   `screened_at` is the worker's cursor, which is why there is no fourth
   bookkeeping table.
 - **`alerts`** — one detected problem, with a `dedupe_key` unique index, so
+- **`satellites`** — the spacecraft the station tracks. Rows register
+  themselves on first contact, and carry nullable limit overrides: `NULL` means
+  the station default, so an unedited row screens exactly as before. This is
+  where "6.5 V is fine on the old bird, alarming on the new one" lives.
   re-running the worker over the same frames never duplicates an alert.
 
 Full reasoning: [`docs/product/schema.md`](docs/product/schema.md).
@@ -260,7 +264,7 @@ error message from PostgreSQL saying so.
 ## Tests and CI
 
 ```bash
-make test                        # 125 tests; the integration ones need `make db-up`
+make test                        # 138 tests; the integration ones need `make db-up`
 make lint                        # ruff check + format --check
 ```
 

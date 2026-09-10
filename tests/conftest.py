@@ -51,7 +51,9 @@ def session(engine) -> Iterator[Session]:
         yield s
         s.rollback()
     with engine.begin() as conn:
-        conn.execute(text("TRUNCATE alerts, telemetry, passes RESTART IDENTITY CASCADE"))
+        conn.execute(
+            text("TRUNCATE alerts, telemetry, passes, satellites RESTART IDENTITY CASCADE")
+        )
 
 
 def make_frame(seq: int, **overrides) -> Telemetry:

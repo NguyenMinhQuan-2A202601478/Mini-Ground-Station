@@ -45,6 +45,9 @@ screens it for anomalies. Three processes, one database:
 - `docs/product/schema.md` is authoritative for the data model. `src/mgs/models.py`
   implements it and `migrations/versions/` applies it. A change to any one of the
   three is incomplete until all three agree.
+- Operating limits are resolved through `mgs.limits`, never by reading
+  `settings.battery_min_v` and friends directly: a spacecraft may override any
+  of them (`docs/decisions/0007`).
 - `docs/ARCHITECTURE.md` is authoritative for process boundaries — what runs
   where, and why screening is not done inside the request path.
 - Orbital geometry comes from SGP4 against a real element set
